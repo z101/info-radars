@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.vscode/settings.json
+
+# .agent dependencies
+.agents/node_modules/
+
+# Skill runtime data (each skill has its own .gitignore)
+!.agents/skills/*/data/.gitkeep
+
+# Generated analysis reports
+reports/
+
+# Temporary reference materials
+.temp/

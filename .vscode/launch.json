@@ -1,0 +1,75 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Full scrape (led-hacks, metadata only)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--category", "led-hacks", "--metadata-only"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Full scrape (led-hacks, with full text)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--category", "led-hacks", "--full-text"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Dry run (1 page)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--category", "led-hacks", "--dry-run"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Database info",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--info"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Export JSON",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--category", "led-hacks", "--export-json"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Run tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests/", "-v"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "List categories",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/.agents/skills/hackaday-blog-radar/hackaday_blog_radar.py",
+            "args": ["--list-categories"],
+            "cwd": "${workspaceFolder}/.agents/skills/hackaday-blog-radar",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
