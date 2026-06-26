@@ -39,3 +39,16 @@ def format_rerank_articles(articles: list[dict]) -> str:
                 lines.append(f"  [{author}] {c.get('content_md', '')}")
         lines.append("")
     return "\n".join(lines)
+
+
+def format_interest_articles(articles: list[dict]) -> str:
+    lines = []
+    for a in articles:
+        tags = ", ".join(a.get("tags", [])) if a.get("tags") else "\u2014"
+        lines.append(f"[{a['id']}] {a['title']} ({a['date']})")
+        lines.append(f"   Score: {a['total']}/100  URL: {a['url']}")
+        lines.append(f"   Tags: {tags}")
+        if a.get("comment"):
+            lines.append(f"   Why: {a['comment']}")
+        lines.append("")
+    return "\n".join(lines)

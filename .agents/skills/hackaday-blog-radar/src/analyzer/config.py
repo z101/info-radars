@@ -30,12 +30,33 @@ DEFAULT_ANALYZE_CONFIG: dict = {
         "Score each article on 5 criteria. Weights indicate the maximum score per criterion:\n\n"
         "{criteria_block}\n\n"
         "total = sum of all criterion scores.\n\n"
-        "Comment scoring (comment_signal):\n"
+        "Comment scoring (noise is filtered implicitly, not as a separate step):\n"
         "- Signal (count): specific components, alternative circuits, corrections, references\n"
-        "- Noise (don't count): 'cool!', '+1', off-topic, empty\n"
+        "- Noise (ignore, no score weight): 'cool!', '+1', off-topic, empty chatter\n"
         "- No comments → comment_signal = 0, other criteria unchanged\n\n"
         "Return a strict JSON array, no markdown, no explanation:\n"
         '[{"id": N, "scores": {"topical_relevance": 0, ...}, "total": 0, "comment": "..."}, ...]\n\n'
         "Articles:\n{articles}"
+    ),
+    "prompt_trend_interpretation": (
+        "Ты — аналитик трендов Hackaday. Проанализируй агрегированные данные за период "
+        "и напиши краткий анализ на русском (2-4 абзаца).\n\n"
+        "{trend_data}\n\n"
+        "Опиши:\n"
+        "1. Общая активность: сколько статей, комментариев, авторов\n"
+        "2. Всплески: статьи с аномально большим числом комментариев — о чём они?\n"
+        "3. Частотность ключевых слов: какие темы растут/падают по месяцам\n"
+        "4. Новые темы: что появилось в этом периоде и не было раньше\n\n"
+        "На русском, фактологично, без воды."
+    ),
+    "prompt_digest_summary": (
+        "Ты готовишь еженедельную сводку для инженера. "
+        "Ниже — интерес пользователя и топ статей за период.\n\n"
+        "Интерес:\n{interest_text}\n\n"
+        "Топ статей:\n{articles}\n\n"
+        "Напиши краткую сводку на русском (1-3 абзаца):\n"
+        "- Что нового и интересного появилось\n"
+        "- Какая статья самая полезная и почему\n"
+        "- Есть ли практические проекты, которые можно повторить"
     ),
 }

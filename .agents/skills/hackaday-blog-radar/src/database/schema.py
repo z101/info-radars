@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS comments (
     content_md      TEXT
 );
 
-CREATE TABLE IF NOT EXISTS analysis_scores (
+CREATE TABLE IF NOT EXISTS search_scores (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     article_id      INTEGER NOT NULL REFERENCES articles(id),
     query_hash      TEXT NOT NULL,
@@ -71,6 +71,19 @@ CREATE TABLE IF NOT EXISTS analysis_scores (
     scored_at       TEXT,
     UNIQUE(article_id, query_hash, rubric_hash, content_hash)
 );
+
+CREATE TABLE IF NOT EXISTS trend_cache (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    category        TEXT NOT NULL,
+    period_start    TEXT NOT NULL,
+    period_end      TEXT NOT NULL,
+    params_json     TEXT NOT NULL,
+    params_hash     TEXT NOT NULL,
+    sql_data_json   TEXT NOT NULL,
+    interpretation_json   TEXT,
+    generated_at    TEXT NOT NULL,
+    UNIQUE(category, params_hash, period_start, period_end)
+);
 """
 
 INDEXES_SQL = [
@@ -82,7 +95,8 @@ INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pages_category ON pages(category)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_category ON scrape_sessions(category)",
     "CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id)",
-    "CREATE INDEX IF NOT EXISTS idx_analysis_query_rubric_total ON analysis_scores(query_hash, rubric_hash, total)",
-    "CREATE INDEX IF NOT EXISTS idx_analysis_query_rubric_status ON analysis_scores(query_hash, rubric_hash, status)",
-    "CREATE INDEX IF NOT EXISTS idx_analysis_article ON analysis_scores(article_id)",
+    "CREATE INDEX IF NOT EXISTS idx_search_query_rubric_total ON search_scores(query_hash, rubric_hash, total)",
+    "CREATE INDEX IF NOT EXISTS idx_search_query_rubric_status ON search_scores(query_hash, rubric_hash, status)",
+    "CREATE INDEX IF NOT EXISTS idx_search_article ON search_scores(article_id)",
+    "CREATE INDEX IF NOT EXISTS idx_trend_params ON trend_cache(category, params_hash, period_start, period_end)",
 ]

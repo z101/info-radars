@@ -371,7 +371,7 @@ class Database:
     # Analysis scoring
     # ------------------------------------------------------------------
 
-    def get_analysis_candidates(
+    def get_search_candidates(
         self,
         category: str,
         query_hash: str,
@@ -388,14 +388,14 @@ class Database:
                 WHERE a.category = ?
                   AND (
                     NOT EXISTS (
-                        SELECT 1 FROM analysis_scores s
+                        SELECT 1 FROM search_scores s
                         WHERE s.article_id = a.id
                           AND s.query_hash = ?
                           AND s.rubric_hash = ?
                           AND s.content_hash = a.content_hash
                     )
                     OR EXISTS (
-                        SELECT 1 FROM analysis_scores s
+                        SELECT 1 FROM search_scores s
                         WHERE s.article_id = a.id
                           AND s.query_hash = ?
                           AND s.rubric_hash = ?
@@ -431,7 +431,7 @@ class Database:
                 SELECT a.id, a.title, a.excerpt, a.tags, a.date, a.url,
                        a.content_md, a.author,
                        s.content_hash, s.filter_reason
-                FROM analysis_scores s
+                FROM search_scores s
                 JOIN articles a ON a.id = s.article_id
                 WHERE a.category = ?
                   AND s.query_hash = ?
@@ -465,14 +465,28 @@ class Database:
         else:
             raise ValueError(f"Unknown stage: {stage!r}. Expected 'filter' or 'rerank'.")
 
-    def get_analysis_comments(self, article_id: int) -> list[dict]:
+    def get_search_candidates_batch(
+        self,
+        category: str,
+        query_hash: str,
+        rubric_hash: str,
+        stage: str,
+        batch: int,
+        batch_size: int,
+        max_retries: int = 3,
+    ) -> list[dict]:
+        all_candidates = self.get_search_candidates(category, query_hash, rubric_hash, stage, max_retries)
+        start = batch * batch_size
+        return all_candidates[start:start + batch_size]
+
+    def get_search_comments(self, article_id: int) -> list[dict]:
         rows = self._fetchall(
             "SELECT author, date, content_md FROM comments WHERE article_id = ? ORDER BY id",
             (article_id,),
         )
         return [{"author": r["author"], "date": r["date"], "content_md": r["content_md"]} for r in rows]
 
-    def save_analysis_filter(
+    def save_search_filter(
         self,
         article_id: int,
         query_hash: str,
@@ -487,7 +501,7 @@ class Database:
         status = "kept" if keep else "dropped"
         self._execute(
             """
-            INSERT INTO analysis_scores
+            INSERT INTO search_scores
                 (article_id, query_hash, query_name, query_text, rubric_hash,
                  content_hash, status, passed_filter, filter_reason, filtered_at, attempts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
@@ -502,7 +516,7 @@ class Database:
              content_hash, status, 1 if keep else 0, reason, now),
         )
 
-    def save_analysis_score(
+    def save_search_score(
         self,
         article_id: int,
         query_hash: str,
@@ -514,7 +528,7 @@ class Database:
         now = datetime.now(timezone.utc).isoformat()
         scores_json = json.dumps(scores, ensure_ascii=False)
         active = self._fetchone(
-            "SELECT id FROM analysis_scores "
+            "SELECT id FROM search_scores "
             "WHERE article_id = ? AND query_hash = ? AND rubric_hash = ? "
             "  AND total IS NULL AND status IN ('kept', 'error') "
             "ORDER BY id DESC LIMIT 1",
@@ -522,12 +536,12 @@ class Database:
         )
         if not active:
             logger.warning(
-                "save_analysis_score: no active row for article_id=%s (skipped)", article_id
+                "save_search_score: no active row for article_id=%s (skipped)", article_id
             )
             return False
         self._execute(
             """
-            UPDATE analysis_scores
+            UPDATE search_scores
             SET status      = 'scored',
                 scores_json = ?,
                 total       = ?,
@@ -540,7 +554,7 @@ class Database:
         )
         return True
 
-    def mark_analysis_error(
+    def mark_search_error(
         self,
         article_id: int,
         query_hash: str,
@@ -553,20 +567,20 @@ class Database:
     ):
         now = datetime.now(timezone.utc).isoformat()
         existing = self._fetchone(
-            "SELECT id, attempts, passed_filter FROM analysis_scores "
+            "SELECT id, attempts, passed_filter FROM search_scores "
             "WHERE article_id = ? AND query_hash = ? AND rubric_hash = ? AND content_hash = ?",
             (article_id, query_hash, rubric_hash, content_hash),
         )
         if existing:
             self._execute(
-                "UPDATE analysis_scores SET status='error', attempts=attempts+1, last_error=? "
+                "UPDATE search_scores SET status='error', attempts=attempts+1, last_error=? "
                 "WHERE article_id=? AND query_hash=? AND rubric_hash=? AND content_hash=?",
                 (error, article_id, query_hash, rubric_hash, content_hash),
             )
         else:
             self._execute(
                 """
-                INSERT INTO analysis_scores
+                INSERT INTO search_scores
                     (article_id, query_hash, query_name, query_text, rubric_hash,
                      content_hash, status, attempts, last_error)
                 VALUES (?, ?, ?, ?, ?, ?, 'error', 1, ?)
@@ -575,7 +589,7 @@ class Database:
                  rubric_hash, content_hash, error),
             )
 
-    def get_analysis_report(
+    def get_search_report(
         self,
         category: str,
         query_hash: str,
@@ -586,7 +600,7 @@ class Database:
         query = (
             "SELECT a.id, a.title, a.date, a.url, a.author, a.tags, "
             "  s.scores_json, s.total, s.comment, s.filter_reason, s.status "
-            "FROM analysis_scores s "
+            "FROM search_scores s "
             "JOIN articles a ON a.id = s.article_id "
             "WHERE a.category = ? "
             "  AND s.query_hash = ? AND s.rubric_hash = ? "
@@ -616,7 +630,7 @@ class Database:
             })
         return result
 
-    def get_analysis_status(
+    def get_search_status(
         self,
         category: str,
         query_hash: str,
@@ -625,7 +639,7 @@ class Database:
         rows = self._fetchall(
             """
             SELECT s.status, COUNT(*) as cnt
-            FROM analysis_scores s
+            FROM search_scores s
             JOIN articles a ON a.id = s.article_id
             WHERE a.category = ? AND s.query_hash = ? AND s.rubric_hash = ?
             GROUP BY s.status
@@ -638,4 +652,208 @@ class Database:
         return {
             "total_articles": total_articles["cnt"] if total_articles else 0,
             "by_status": {r["status"]: r["cnt"] for r in rows},
+        }
+
+    # ------------------------------------------------------------------
+    # Trend analysis
+    # ------------------------------------------------------------------
+
+    def get_trend_aggregates(
+        self,
+        category: str,
+        period_start: str,
+        period_end: str,
+        keyword: str | None = None,
+    ) -> dict:
+        article_filter = " AND a.date >= ? AND a.date <= ?"
+        params: list = [category, period_start, period_end]
+
+        total = self._fetchone(
+            f"SELECT COUNT(*) as cnt FROM articles a WHERE a.category = ?{article_filter}",
+            params,
+        )["cnt"]
+
+        with_full_text = self._fetchone(
+            f"SELECT COUNT(*) as cnt FROM articles a WHERE a.category = ? AND a.status = 'full'{article_filter}",
+            params,
+        )["cnt"]
+
+        comment_count = self._fetchone(
+            f"SELECT COUNT(*) as cnt FROM comments c JOIN articles a ON a.id = c.article_id WHERE a.category = ?{article_filter}",
+            params,
+        )["cnt"]
+
+        top_authors = self._fetchall(
+            f"SELECT a.author, COUNT(*) as cnt FROM articles a WHERE a.category = ? AND a.author IS NOT NULL AND a.author != ''{article_filter} GROUP BY a.author ORDER BY cnt DESC LIMIT 10",
+            params,
+        )
+        top_authors_list = [{"author": r["author"], "count": r["cnt"]} for r in top_authors]
+
+        result = {
+            "period": {"start": period_start, "end": period_end},
+            "category": category,
+            "total_articles": total,
+            "full_texts": with_full_text,
+            "total_comments": comment_count,
+            "top_authors": top_authors_list,
+        }
+
+        if keyword:
+            like = f"%{keyword}%"
+            kw_params = params + [like, like, like]
+            kw_count = self._fetchone(
+                f"SELECT COUNT(*) as cnt FROM articles a WHERE a.category = ?{article_filter} AND (a.title LIKE ? OR a.excerpt LIKE ? OR a.content_md LIKE ?)",
+                kw_params,
+            )["cnt"]
+            result["keyword_matches"] = kw_count
+
+        return result
+
+    def get_comment_spikes(
+        self,
+        category: str,
+        period_start: str,
+        period_end: str,
+        stddev_mult: float = 2.0,
+        limit: int = 20,
+    ) -> list[dict]:
+        rows = self._fetchall(
+            """
+            SELECT a.id, a.title, a.date, a.url, cnt,
+                   ROUND(AVG(cnt) OVER (), 1) as avg_cnt,
+                   ROUND(AVG(cnt * cnt) OVER () - AVG(cnt) OVER () * AVG(cnt) OVER (), 1) as var_cnt
+            FROM (
+                SELECT a.id, a.title, a.date, a.url, COUNT(c.id) as cnt
+                FROM articles a
+                LEFT JOIN comments c ON c.article_id = a.id
+                WHERE a.category = ? AND a.date >= ? AND a.date <= ?
+                GROUP BY a.id
+            )
+            WHERE cnt > AVG(cnt) OVER () + ? * SQRT(AVG(cnt * cnt) OVER () - AVG(cnt) OVER () * AVG(cnt) OVER () + 0.0001)
+            ORDER BY cnt DESC
+            LIMIT ?
+            """,
+            (category, period_start, period_end, stddev_mult, limit),
+        )
+        return [dict(r) for r in rows]
+
+    def get_keyword_frequency(
+        self,
+        category: str,
+        period_start: str,
+        period_end: str,
+        keywords: list[str],
+    ) -> dict:
+        result = {}
+        for keyword in keywords:
+            like = f"%{keyword}%"
+            monthly = self._fetchall(
+                """
+                SELECT strftime('%Y-%m', a.date) as month, COUNT(*) as freq
+                FROM articles a
+                WHERE a.category = ?
+                  AND a.date >= ? AND a.date <= ?
+                  AND (a.title LIKE ? OR a.excerpt LIKE ? OR a.tags LIKE ?)
+                GROUP BY month
+                ORDER BY month
+                """,
+                (category, period_start, period_end, like, like, like),
+            )
+            result[keyword] = [dict(r) for r in monthly]
+        return result
+
+    def get_novel_topics(
+        self,
+        category: str,
+        lookback_start: str,
+        period_start: str,
+        period_end: str,
+    ) -> list[dict]:
+        rows = self._fetchall(
+            """
+            SELECT a.id, a.title, a.date, a.url, a.tags, a.excerpt
+            FROM articles a
+            WHERE a.category = ?
+              AND a.date >= ? AND a.date <= ?
+              AND a.id NOT IN (
+                SELECT a2.id FROM articles a2
+                WHERE a2.category = ? AND a2.date < ?
+              )
+            ORDER BY a.date DESC
+            """,
+            (category, period_start, period_end, category, lookback_start),
+        )
+        result = []
+        for r in rows:
+            tags = json.loads(r["tags"]) if r["tags"] else []
+            result.append({
+                "id": r["id"],
+                "title": r["title"],
+                "date": r["date"],
+                "url": r["url"],
+                "tags": tags,
+                "excerpt": r["excerpt"] or "",
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # Trend cache
+    # ------------------------------------------------------------------
+
+    def save_trend_cache(
+        self,
+        category: str,
+        period_start: str,
+        period_end: str,
+        params_json: str,
+        params_hash: str,
+        sql_data_json: str,
+        interpretation_json: str | None = None,
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            """
+            INSERT OR REPLACE INTO trend_cache
+                (category, period_start, period_end, params_json, params_hash,
+                 sql_data_json, interpretation_json, generated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (category, period_start, period_end, params_json, params_hash,
+             sql_data_json, interpretation_json, now),
+        )
+
+    def get_trend_cache(
+        self,
+        category: str,
+        params_hash: str,
+        period_start: str,
+        period_end: str,
+    ) -> dict | None:
+        row = self._fetchone(
+            "SELECT * FROM trend_cache WHERE category = ? AND params_hash = ? AND period_start = ? AND period_end = ?",
+            (category, params_hash, period_start, period_end),
+        )
+        if row:
+            return {
+                "params_json": row["params_json"],
+                "sql_data_json": row["sql_data_json"],
+                "interpretation_json": row["interpretation_json"],
+                "generated_at": row["generated_at"],
+            }
+        return None
+
+    def get_trend_status(
+        self,
+        category: str,
+        params_hash: str,
+        period_start: str,
+        period_end: str,
+    ) -> dict:
+        cached = self.get_trend_cache(category, params_hash, period_start, period_end)
+        if cached is None:
+            return {"cached": False}
+        return {
+            "cached": True,
+            "has_interpretation": cached["interpretation_json"] is not None,
+            "generated_at": cached["generated_at"],
         }

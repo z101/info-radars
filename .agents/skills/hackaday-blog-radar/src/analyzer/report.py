@@ -17,7 +17,7 @@ def generate_report(
     top: int | None = None,
 ) -> str | None:
     """Generate a CSV report. Returns the path to the file, or None if no data."""
-    report = db.get_analysis_report(
+    report = db.get_search_report(
         category, query_hash, rubric_hash,
         min_total=min_total, top=top,
     )
@@ -27,7 +27,7 @@ def generate_report(
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     reports_dir = Path("../../../reports/hackaday-blog-radar")
     reports_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = reports_dir / f"{category}_analysis_{query_name}_{today}.csv"
+    csv_path = reports_dir / f"{category}_search_{query_name}_{today}.csv"
 
     criteria_keys = list(DEFAULT_ANALYZE_CONFIG.get("criteria", {}).keys())
     fieldnames = ["id", "title", "date", "url", "author", "tags"] + criteria_keys + ["total", "comment", "filter_reason"]
@@ -67,3 +67,73 @@ def generate_report(
         print()
 
     return str(csv_path)
+
+
+def generate_report_text(
+    db: Database,
+    category: str,
+    query_name: str,
+    query_hash: str,
+    rubric_hash: str,
+    min_total: int = 0,
+    top: int | None = None,
+) -> str | None:
+    report = db.get_search_report(
+        category, query_hash, rubric_hash,
+        min_total=min_total, top=top,
+    )
+    if not report:
+        return None
+
+    lines = []
+    lines.append(f"Results for '{query_name}' ({category}):\n")
+    for r in report[:top or 20]:
+        lines.append(f"[{r['id']:4d}] ({r['total']:3d}pt) {r['title']}")
+        lines.append(f"       {r['date']}  {r['url']}")
+        if r["comment"]:
+            lines.append(f"       {r['comment'][:200]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def generate_digest_report(
+    db: Database,
+    category: str,
+    query_name: str,
+    query_text: str,
+    query_hash: str,
+    rubric_hash: str,
+    period_start: str,
+    period_end: str,
+    top: int = 5,
+) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reports_dir = Path("../../../reports/hackaday-blog-radar")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / f"digest_{category}_{query_name}_{today}.md"
+
+    report = db.get_search_report(
+        category, query_hash, rubric_hash,
+        min_total=0, top=top,
+    )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"# Digest: {query_name}\n")
+        f.write(f"Period: {period_start} — {period_end}\n")
+        f.write(f"Category: {category}\n\n")
+        if report:
+            f.write(f"Top {min(top, len(report))} relevant articles:\n\n")
+            for r in report:
+                tags = ", ".join(r["tags"]) if r["tags"] else "-"
+                f.write(f"## [{r['id']}] {r['title']}\n")
+                f.write(f"- **Date:** {r['date']}\n")
+                f.write(f"- **Score:** {r['total']}/100\n")
+                f.write(f"- **URL:** {r['url']}\n")
+                f.write(f"- **Tags:** {tags}\n")
+                if r["comment"]:
+                    f.write(f"- **Why:** {r['comment']}\n")
+                f.write("\n")
+        else:
+            f.write("No relevant articles found in this period.\n")
+
+    return str(path)

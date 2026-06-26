@@ -40,7 +40,7 @@ class TestDatabaseInit:
         assert "pages" in tables
         assert "articles" in tables
         assert "comments" in tables
-        assert "analysis_scores" in tables
+        assert "search_scores" in tables
 
     def test_creates_indexes(self, tmp_path):
         Database(str(tmp_path / "test.db"))
@@ -417,7 +417,7 @@ class TestFilterCandidates:
         self._setup(tmp_db)
         qh = compute_query_hash("test query")
         rh = compute_rubric_hash({"c": {"weight": 10}})
-        candidates = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        candidates = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         assert len(candidates) == 2
 
     def test_processed_article_excluded(self, tmp_db):
@@ -425,12 +425,12 @@ class TestFilterCandidates:
         self._setup(tmp_db)
         qh = compute_query_hash("test query")
         rh = compute_rubric_hash({"c": {"weight": 10}})
-        candidates = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        candidates = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         art = candidates[0]
-        tmp_db.save_analysis_filter(
+        tmp_db.save_search_filter(
             art["id"], qh, "test", "test query", rh, art["content_hash"], True, "relevant"
         )
-        remaining = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        remaining = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         assert len(remaining) == 1
         assert remaining[0]["id"] != art["id"]
 
@@ -439,15 +439,15 @@ class TestFilterCandidates:
         self._setup(tmp_db)
         qh = compute_query_hash("test query")
         rh = compute_rubric_hash({"c": {"weight": 10}})
-        candidates = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        candidates = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         art = candidates[0]
         ch = art["content_hash"]
-        tmp_db.mark_analysis_error(art["id"], qh, rh, ch, "filter", "timeout", "test", "test query")
-        remaining = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter", max_retries=3)
+        tmp_db.mark_search_error(art["id"], qh, rh, ch, "filter", "timeout", "test", "test query")
+        remaining = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter", max_retries=3)
         assert art["id"] in [c["id"] for c in remaining]
         for _ in range(3):
-            tmp_db.mark_analysis_error(art["id"], qh, rh, ch, "filter", "timeout", "test", "test query")
-        remaining = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter", max_retries=3)
+            tmp_db.mark_search_error(art["id"], qh, rh, ch, "filter", "timeout", "test", "test query")
+        remaining = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter", max_retries=3)
         assert art["id"] not in [c["id"] for c in remaining]
 
 
@@ -465,10 +465,10 @@ class TestRerankCandidates:
         self._seed(tmp_db)
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        filter_cands = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        filter_cands = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         for c in filter_cands:
-            tmp_db.save_analysis_filter(c["id"], qh, "q", "q", rh, c["content_hash"], True, "ok")
-        rerank = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "rerank")
+            tmp_db.save_search_filter(c["id"], qh, "q", "q", rh, c["content_hash"], True, "ok")
+        rerank = tmp_db.get_search_candidates("led-hacks", qh, rh, "rerank")
         assert len(rerank) == 2
 
     def test_dropped_articles_not_in_rerank(self, tmp_db):
@@ -476,10 +476,10 @@ class TestRerankCandidates:
         self._seed(tmp_db)
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        filter_cands = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
-        tmp_db.save_analysis_filter(filter_cands[0]["id"], qh, "q", "q", rh, filter_cands[0]["content_hash"], True, "keep")
-        tmp_db.save_analysis_filter(filter_cands[1]["id"], qh, "q", "q", rh, filter_cands[1]["content_hash"], False, "irrelevant")
-        rerank = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "rerank")
+        filter_cands = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
+        tmp_db.save_search_filter(filter_cands[0]["id"], qh, "q", "q", rh, filter_cands[0]["content_hash"], True, "keep")
+        tmp_db.save_search_filter(filter_cands[1]["id"], qh, "q", "q", rh, filter_cands[1]["content_hash"], False, "irrelevant")
+        rerank = tmp_db.get_search_candidates("led-hacks", qh, rh, "rerank")
         assert len(rerank) == 1
         assert rerank[0]["id"] == filter_cands[0]["id"]
 
@@ -488,11 +488,11 @@ class TestRerankCandidates:
         self._seed(tmp_db)
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        filter_cands = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        filter_cands = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         art = filter_cands[0]
-        tmp_db.save_analysis_filter(art["id"], qh, "q", "q", rh, art["content_hash"], True, "ok")
-        tmp_db.save_analysis_score(art["id"], qh, rh, {"x": 8}, 8, "good")
-        rerank = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "rerank")
+        tmp_db.save_search_filter(art["id"], qh, "q", "q", rh, art["content_hash"], True, "ok")
+        tmp_db.save_search_score(art["id"], qh, rh, {"x": 8}, 8, "good")
+        rerank = tmp_db.get_search_candidates("led-hacks", qh, rh, "rerank")
         assert art["id"] not in [c["id"] for c in rerank]
 
 
@@ -511,40 +511,40 @@ class TestSaveAnalysis:
 
     def test_save_filter_sets_kept_status(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.save_analysis_filter(aid, "qh", "n", "text", "rh", "ch", True, "relevant")
-        row = tmp_db._fetchone("SELECT status, passed_filter FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.save_search_filter(aid, "qh", "n", "text", "rh", "ch", True, "relevant")
+        row = tmp_db._fetchone("SELECT status, passed_filter FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "kept"
         assert row["passed_filter"] == 1
 
     def test_save_filter_sets_dropped_status(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.save_analysis_filter(aid, "qh", "n", "text", "rh", "ch", False, "off-topic")
-        row = tmp_db._fetchone("SELECT status, passed_filter FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.save_search_filter(aid, "qh", "n", "text", "rh", "ch", False, "off-topic")
+        row = tmp_db._fetchone("SELECT status, passed_filter FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "dropped"
         assert row["passed_filter"] == 0
 
     def test_save_filter_upserts_on_conflict(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.save_analysis_filter(aid, "qh", "n", "text", "rh", "ch", False, "first")
-        tmp_db.save_analysis_filter(aid, "qh", "n", "text", "rh", "ch", True, "second")
-        row = tmp_db._fetchone("SELECT status, filter_reason FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.save_search_filter(aid, "qh", "n", "text", "rh", "ch", False, "first")
+        tmp_db.save_search_filter(aid, "qh", "n", "text", "rh", "ch", True, "second")
+        row = tmp_db._fetchone("SELECT status, filter_reason FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "kept"
         assert row["filter_reason"] == "second"
 
     def test_save_score_sets_scored_status(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.save_analysis_filter(aid, "qh", "n", "text", "rh", "ch", True, "ok")
-        ok = tmp_db.save_analysis_score(aid, "qh", "rh", {"x": 20}, 20, "great")
+        tmp_db.save_search_filter(aid, "qh", "n", "text", "rh", "ch", True, "ok")
+        ok = tmp_db.save_search_score(aid, "qh", "rh", {"x": 20}, 20, "great")
         assert ok is True
-        row = tmp_db._fetchone("SELECT status, total FROM analysis_scores WHERE article_id=?", (aid,))
+        row = tmp_db._fetchone("SELECT status, total FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "scored"
         assert row["total"] == 20
 
     def test_save_score_returns_false_without_active_row(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        ok = tmp_db.save_analysis_score(aid, "qh", "rh", {"x": 1}, 1, "c")
+        ok = tmp_db.save_search_score(aid, "qh", "rh", {"x": 1}, 1, "c")
         assert ok is False
-        row = tmp_db._fetchone("SELECT COUNT(*) AS n FROM analysis_scores WHERE article_id=?", (aid,))
+        row = tmp_db._fetchone("SELECT COUNT(*) AS n FROM search_scores WHERE article_id=?", (aid,))
         assert row["n"] == 0
 
     def test_save_score_updates_kept_row_after_content_drift(self, tmp_db):
@@ -552,10 +552,10 @@ class TestSaveAnalysis:
         from analyzer.hashes import compute_query_hash, compute_rubric_hash
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        ch_v1 = next(c["content_hash"] for c in tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter") if c["id"] == aid)
-        tmp_db.save_analysis_filter(aid, qh, "n", "q", rh, ch_v1, True, "ok")
+        ch_v1 = next(c["content_hash"] for c in tmp_db.get_search_candidates("led-hacks", qh, rh, "filter") if c["id"] == aid)
+        tmp_db.save_search_filter(aid, qh, "n", "q", rh, ch_v1, True, "ok")
         tmp_db.update_article_full_text(aid, "<raw>", "content v2 drift", sid)
-        ok = tmp_db.save_analysis_score(aid, qh, rh, {"x": 5}, 5, "c")
+        ok = tmp_db.save_search_score(aid, qh, rh, {"x": 5}, 5, "c")
         assert ok is True
 
 
@@ -570,24 +570,24 @@ class TestErrorTracking:
 
     def test_mark_error_creates_row(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.mark_analysis_error(aid, "qh", "rh", "ch", "filter", "timeout", "n", "q")
-        row = tmp_db._fetchone("SELECT status, attempts, last_error FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.mark_search_error(aid, "qh", "rh", "ch", "filter", "timeout", "n", "q")
+        row = tmp_db._fetchone("SELECT status, attempts, last_error FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "error"
         assert row["attempts"] == 1
         assert "timeout" in row["last_error"]
 
     def test_mark_error_increments_attempts(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.mark_analysis_error(aid, "qh", "rh", "ch", "filter", "err1", "n", "q")
-        tmp_db.mark_analysis_error(aid, "qh", "rh", "ch", "filter", "err2", "n", "q")
-        row = tmp_db._fetchone("SELECT attempts FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.mark_search_error(aid, "qh", "rh", "ch", "filter", "err1", "n", "q")
+        tmp_db.mark_search_error(aid, "qh", "rh", "ch", "filter", "err2", "n", "q")
+        row = tmp_db._fetchone("SELECT attempts FROM search_scores WHERE article_id=?", (aid,))
         assert row["attempts"] == 2
 
     def test_save_filter_after_error_clears_last_error(self, tmp_db):
         aid = self._seed_article(tmp_db)
-        tmp_db.mark_analysis_error(aid, "qh", "rh", "ch", "filter", "boom", "n", "q")
-        tmp_db.save_analysis_filter(aid, "qh", "n", "q", "rh", "ch", True, "ok")
-        row = tmp_db._fetchone("SELECT last_error FROM analysis_scores WHERE article_id=?", (aid,))
+        tmp_db.mark_search_error(aid, "qh", "rh", "ch", "filter", "boom", "n", "q")
+        tmp_db.save_search_filter(aid, "qh", "n", "q", "rh", "ch", True, "ok")
+        row = tmp_db._fetchone("SELECT last_error FROM search_scores WHERE article_id=?", (aid,))
         assert row["last_error"] is None
 
 
@@ -607,25 +607,25 @@ class TestAnalysisReport:
             db.upsert_article("led-hacks", f"Art {i}", url, sid, now, f"2024-0{i+1}-01", "exc", [])
             row = db._fetchone("SELECT id FROM articles WHERE url=?", (url,))
             aid = row["id"]
-            db.save_analysis_filter(aid, qh, "n", "q", rh, f"ch{i}", True, "ok")
-            db.save_analysis_score(aid, qh, rh, {"x": total}, total, f"comment {i}")
+            db.save_search_filter(aid, qh, "n", "q", rh, f"ch{i}", True, "ok")
+            db.save_search_score(aid, qh, rh, {"x": total}, total, f"comment {i}")
         return qh, rh
 
     def test_report_sorted_by_total_desc(self, tmp_db):
         qh, rh = self._seed_scored(tmp_db)
-        report = tmp_db.get_analysis_report("led-hacks", qh, rh)
+        report = tmp_db.get_search_report("led-hacks", qh, rh)
         totals = [r["total"] for r in report]
         assert totals == sorted(totals, reverse=True)
 
     def test_report_top_limit(self, tmp_db):
         qh, rh = self._seed_scored(tmp_db)
-        report = tmp_db.get_analysis_report("led-hacks", qh, rh, top=2)
+        report = tmp_db.get_search_report("led-hacks", qh, rh, top=2)
         assert len(report) == 2
         assert report[0]["total"] == 80
 
     def test_report_min_total_filter(self, tmp_db):
         qh, rh = self._seed_scored(tmp_db)
-        report = tmp_db.get_analysis_report("led-hacks", qh, rh, min_total=40)
+        report = tmp_db.get_search_report("led-hacks", qh, rh, min_total=40)
         assert all(r["total"] >= 40 for r in report)
 
     def test_report_empty_before_scoring(self, tmp_db):
@@ -633,7 +633,7 @@ class TestAnalysisReport:
         sid = tmp_db.create_session("led-hacks")
         now = datetime.now(timezone.utc).isoformat()
         tmp_db.upsert_article("led-hacks", "Art", "https://hackaday.com/x/", sid, now, "2024-01-01", "e", [])
-        report = tmp_db.get_analysis_report("led-hacks", "qh", "rh")
+        report = tmp_db.get_search_report("led-hacks", "qh", "rh")
         assert report == []
 
 
@@ -648,13 +648,13 @@ class TestAnalysisStatus:
             row = tmp_db._fetchone("SELECT id FROM articles WHERE url=?", (f"https://hackaday.com/s{i}/",))
             aid = row["id"]
             if i == 0:
-                tmp_db.save_analysis_filter(aid, qh, "n", "q", rh, f"ch{i}", True, "ok")
-                tmp_db.save_analysis_score(aid, qh, rh, {}, 50, "c")
+                tmp_db.save_search_filter(aid, qh, "n", "q", rh, f"ch{i}", True, "ok")
+                tmp_db.save_search_score(aid, qh, rh, {}, 50, "c")
             elif i == 1:
-                tmp_db.save_analysis_filter(aid, qh, "n", "q", rh, f"ch{i}", False, "drop")
+                tmp_db.save_search_filter(aid, qh, "n", "q", rh, f"ch{i}", False, "drop")
             else:
-                tmp_db.mark_analysis_error(aid, qh, rh, f"ch{i}", "filter", "boom", "n", "q")
-        status = tmp_db.get_analysis_status("led-hacks", qh, rh)
+                tmp_db.mark_search_error(aid, qh, rh, f"ch{i}", "filter", "boom", "n", "q")
+        status = tmp_db.get_search_status("led-hacks", qh, rh)
         assert status["total_articles"] == 3
         assert status["by_status"]["scored"] == 1
         assert status["by_status"]["dropped"] == 1
@@ -667,14 +667,14 @@ class TestContentHashInvalidation:
         from analyzer.hashes import compute_query_hash, compute_rubric_hash
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        cands = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         assert aid in [c["id"] for c in cands]
         ch_v1 = next(c["content_hash"] for c in cands if c["id"] == aid)
-        tmp_db.save_analysis_filter(aid, qh, "n", "q", rh, ch_v1, True, "ok")
-        tmp_db.save_analysis_score(aid, qh, rh, {"x": 8}, 8, "good")
-        assert aid not in [c["id"] for c in tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")]
+        tmp_db.save_search_filter(aid, qh, "n", "q", rh, ch_v1, True, "ok")
+        tmp_db.save_search_score(aid, qh, rh, {"x": 8}, 8, "good")
+        assert aid not in [c["id"] for c in tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")]
         tmp_db.update_article_full_text(aid, "<raw>", "content v2 CHANGED", sid)
-        cands2 = tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")
+        cands2 = tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")
         assert aid in [c["id"] for c in cands2]
         ch_v2 = next(c["content_hash"] for c in cands2 if c["id"] == aid)
         assert ch_v2 != ch_v1
@@ -684,11 +684,11 @@ class TestContentHashInvalidation:
         from analyzer.hashes import compute_query_hash, compute_rubric_hash
         qh = compute_query_hash("q")
         rh = compute_rubric_hash({"x": {"weight": 10}})
-        ch = next(c["content_hash"] for c in tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter") if c["id"] == aid)
-        tmp_db.save_analysis_filter(aid, qh, "n", "q", rh, ch, True, "ok")
-        tmp_db.mark_analysis_error(aid, qh, rh, ch, "rerank", "boom", "n", "q")
-        assert aid not in [c["id"] for c in tmp_db.get_analysis_candidates("led-hacks", qh, rh, "filter")]
-        assert aid in [c["id"] for c in tmp_db.get_analysis_candidates("led-hacks", qh, rh, "rerank")]
+        ch = next(c["content_hash"] for c in tmp_db.get_search_candidates("led-hacks", qh, rh, "filter") if c["id"] == aid)
+        tmp_db.save_search_filter(aid, qh, "n", "q", rh, ch, True, "ok")
+        tmp_db.mark_search_error(aid, qh, rh, ch, "rerank", "boom", "n", "q")
+        assert aid not in [c["id"] for c in tmp_db.get_search_candidates("led-hacks", qh, rh, "filter")]
+        assert aid in [c["id"] for c in tmp_db.get_search_candidates("led-hacks", qh, rh, "rerank")]
 
     def test_content_hash_consistency(self, tmp_db):
         from analyzer.hashes import compute_content_hash, compute_query_hash, compute_rubric_hash
@@ -698,7 +698,7 @@ class TestContentHashInvalidation:
         title, excerpt = "Meta Only", "just an excerpt"
         url = "https://hackaday.com/meta/"
         tmp_db.upsert_article("led-hacks", title, url, sid, now, "2024-01-01", excerpt, [])
-        cands = tmp_db.get_analysis_candidates("led-hacks", compute_query_hash("q"), compute_rubric_hash({"x": {"weight": 10}}), "filter")
+        cands = tmp_db.get_search_candidates("led-hacks", compute_query_hash("q"), compute_rubric_hash({"x": {"weight": 10}}), "filter")
         ch = next(c["content_hash"] for c in cands if c["url"] == url)
         assert ch == compute_content_hash(None, title, excerpt)
         aid, _ = _seed_article(tmp_db, content="full body text")

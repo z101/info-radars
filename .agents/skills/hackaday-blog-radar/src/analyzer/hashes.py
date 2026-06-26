@@ -25,3 +25,8 @@ def compute_content_hash(content_md: Optional[str], title: str = "", excerpt: st
     if content_md:
         return _sha256(content_md)
     return _sha256((title or "") + "\n" + (excerpt or ""))
+
+
+def compute_params_hash(params: dict) -> str:
+    canonical = json.dumps(params, sort_keys=True, ensure_ascii=False)
+    return _sha256(canonical)

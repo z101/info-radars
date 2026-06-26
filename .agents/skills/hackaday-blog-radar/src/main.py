@@ -15,10 +15,13 @@ if str(_src) not in sys.path:
 from analyzer.config import DEFAULT_ANALYZE_CONFIG
 from analyzer.hashes import (
     compute_content_hash,
+    compute_params_hash,
     compute_query_hash,
     compute_rubric_hash,
 )
-from analyzer.report import generate_report
+from analyzer.prompts import format_interest_articles
+from analyzer.report import generate_report, generate_report_text, generate_digest_report
+from analyzer.trends import run_trend_analysis, save_trend_interpretation
 from database import Database
 from scraper.exporter import export_json, format_info
 from scraper.fetcher import (
@@ -268,9 +271,9 @@ def _resolve_hashes(args) -> tuple[str, str, str, str, dict]:
     return query_name, query_text, query_hash, rubric_hash, cfg
 
 
-def _handle_analysis(args, db: Database) -> int:
+def _handle_search_pipeline(args, db: Database) -> int:
     if not args.query_file:
-        logger.error("--query-file is required for analysis commands")
+        logger.error("--query-file is required for search commands")
         return 1
 
     try:
@@ -281,15 +284,15 @@ def _handle_analysis(args, db: Database) -> int:
 
     max_retries = 3
 
-    if args.mark_all_kept:
+    if args.search_skip_filter:
         if not args.category:
-            logger.error("--category is required for --mark-all-kept")
+            logger.error("--category is required for --search-skip-filter")
             return 1
-        candidates = db.get_analysis_candidates(
+        candidates = db.get_search_candidates(
             args.category, query_hash, rubric_hash, "filter", max_retries
         )
         for c in candidates:
-            db.save_analysis_filter(
+            db.save_search_filter(
                 c["id"], query_hash, query_name, query_text,
                 rubric_hash, c["content_hash"], True, "auto-kept (filter disabled)",
             )
@@ -299,11 +302,11 @@ def _handle_analysis(args, db: Database) -> int:
             print(msg)
         return 0
 
-    if args.analysis_status:
+    if args.search_status:
         if not args.category:
-            logger.error("--category is required for --analysis-status")
+            logger.error("--category is required for --search-status")
             return 1
-        status = db.get_analysis_status(args.category, query_hash, rubric_hash)
+        status = db.get_search_status(args.category, query_hash, rubric_hash)
         if args.json:
             print(json.dumps(status, indent=2, ensure_ascii=False))
         else:
@@ -314,42 +317,51 @@ def _handle_analysis(args, db: Database) -> int:
                 print(f"  {s:12s}: {cnt}")
         return 0
 
-    if args.analysis_candidates:
+    if args.search_candidates:
         if not args.category:
-            logger.error("--category is required for --analysis-candidates")
+            logger.error("--category is required for --search-candidates")
             return 1
         if not args.stage:
-            logger.error("--stage is required for --analysis-candidates")
+            logger.error("--stage is required for --search-candidates")
             return 1
-        candidates = db.get_analysis_candidates(
-            args.category, query_hash, rubric_hash, args.stage, max_retries
-        )
+        batch_size = DEFAULT_ANALYZE_CONFIG.get("primary_filter", {}).get("batch_size", 100)
+        if args.stage == "rerank":
+            batch_size = DEFAULT_ANALYZE_CONFIG.get("batch_size", 20)
+        if args.batch is not None:
+            candidates = db.get_search_candidates_batch(
+                args.category, query_hash, rubric_hash, args.stage,
+                args.batch, batch_size, max_retries,
+            )
+        else:
+            candidates = db.get_search_candidates(
+                args.category, query_hash, rubric_hash, args.stage, max_retries
+            )
         if args.stage == "rerank":
             for c in candidates:
-                comments = db.get_analysis_comments(c["id"])
+                comments = db.get_search_comments(c["id"])
                 c["comments"] = comments
         print(json.dumps(candidates, indent=2, ensure_ascii=False, default=str))
         return 0
 
-    if args.save_analysis:
+    if args.search_save:
         if not args.category:
-            logger.error("--category is required for --save-analysis")
+            logger.error("--category is required for --search-save")
             return 1
         if not args.stage:
-            logger.error("--stage is required for --save-analysis")
+            logger.error("--stage is required for --search-save")
             return 1
-        save_path = Path(args.save_analysis)
+        save_path = Path(args.search_save)
         if not save_path.exists():
-            logger.error("File not found: %s", args.save_analysis)
+            logger.error("File not found: %s", args.search_save)
             return 1
         try:
             results = json.loads(save_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
-            logger.error("Invalid JSON in %s: %s", args.save_analysis, e)
+            logger.error("Invalid JSON in %s: %s", args.search_save, e)
             return 1
 
         if not isinstance(results, list):
-            logger.error("Expected a JSON array in %s", args.save_analysis)
+            logger.error("Expected a JSON array in %s", args.search_save)
             return 1
 
         saved = 0
@@ -370,7 +382,7 @@ def _handle_analysis(args, db: Database) -> int:
             content_hash = compute_content_hash(row["content_md"], row["title"] or "", row["excerpt"] or "")
 
             if "error" in item:
-                db.mark_analysis_error(
+                db.mark_search_error(
                     article_id, query_hash, rubric_hash, content_hash,
                     args.stage, str(item["error"]), query_name, query_text,
                 )
@@ -380,7 +392,7 @@ def _handle_analysis(args, db: Database) -> int:
             if args.stage == "filter":
                 keep = bool(item.get("keep", True))
                 reason = item.get("reason", "")
-                db.save_analysis_filter(
+                db.save_search_filter(
                     article_id, query_hash, query_name, query_text,
                     rubric_hash, content_hash, keep, reason,
                 )
@@ -389,7 +401,7 @@ def _handle_analysis(args, db: Database) -> int:
                 scores = item.get("scores", {})
                 total = item.get("total", sum(scores.values()) if scores else 0)
                 comment = item.get("comment", "")
-                ok = db.save_analysis_score(
+                ok = db.save_search_score(
                     article_id, query_hash, rubric_hash,
                     scores, total, comment,
                 )
@@ -404,9 +416,9 @@ def _handle_analysis(args, db: Database) -> int:
             print(f"Saved {saved} result(s), {errors} error(s) for stage={args.stage}")
         return 0
 
-    if args.analysis_report:
+    if args.search_report:
         if not args.category:
-            logger.error("--category is required for --analysis-report")
+            logger.error("--category is required for --search-report")
             return 1
 
         csv_path = generate_report(
@@ -415,8 +427,153 @@ def _handle_analysis(args, db: Database) -> int:
         )
         if csv_path is None:
             print(f"No scored results yet for query '{query_name}' in category '{args.category}'.")
-            print("Run the analysis pipeline first (filter + rerank stages).")
+            print("Run the search pipeline first (filter + rerank stages).")
         return 0
+
+    return 0
+
+
+def _handle_search(args, db: Database) -> int:
+    if not args.category:
+        logger.error("--category is required for --search")
+        return 1
+
+    query_text = args.search.strip()
+    if not query_text:
+        logger.error("--search requires non-empty text")
+        return 1
+
+    query_hash = compute_query_hash(query_text)
+    query_name = f"search_{query_hash[:12]}"
+    rubric_hash = compute_rubric_hash(DEFAULT_ANALYZE_CONFIG["criteria"])
+
+    if args.query_file:
+        query_name, query_text = _load_query_file(args.query_file)
+        query_hash = compute_query_hash(query_text)
+
+    status = db.get_search_status(args.category, query_hash, rubric_hash)
+    total = status["total_articles"]
+    scored = status["by_status"].get("scored", 0)
+    pending = total - scored
+
+    if pending <= 0:
+        text = generate_report_text(
+            db, args.category, query_name, query_hash, rubric_hash,
+            min_total=args.min_total or 0, top=args.top or 20,
+        )
+        csv_path = generate_report(
+            db, args.category, query_name, query_hash, rubric_hash,
+            min_total=args.min_total or 0, top=args.top,
+        )
+        if text:
+            print(text)
+        else:
+            print("No scored results match the criteria.")
+        return 0
+
+    cfg = DEFAULT_ANALYZE_CONFIG
+    batch_size = cfg["primary_filter"]["batch_size"]
+    parallel = cfg["parallel_agents"]
+
+    print(f"\n=== SEARCH REQUIRED: '{query_name}' ===")
+    print(f"Category: {args.category}")
+    print(f"Uncached articles: {total - scored} (total: {total}, scored: {scored})")
+    print(f"")
+    print(f"Stage 1 — filter (triage):")
+    filter_batches = (pending + batch_size - 1) // batch_size
+    print(f"  Batch size: {batch_size}")
+    print(f"  Batches: {filter_batches}")
+    print(f"  Parallel agents: {parallel}")
+    print(f"")
+    print(f"  Commands for batch 0:")
+    print(f"    --search-candidates --stage filter -c {args.category} --batch 0 --json")
+    print(f"")
+    print(f"  After subagent evaluation:")
+    print(f"    --search-save <result_file> --stage filter")
+    print(f"")
+    print(f"  Repeat for batches 1..{filter_batches - 1}.")
+    print(f"")
+    if scored > 0:
+        print(f"  Note: {scored} already scored articles will be in the report.")
+    print(f"")
+    print(f"After all filter batches, re-run the same command for rerank stage.")
+    print(f"")
+    print(f"Re-run this command after all stages complete to get the report.")
+    return 0
+
+
+def _handle_trends(args, db: Database) -> int:
+    if not args.category:
+        logger.error("--category is required for --trends")
+        return 1
+
+    period_start = args.since or "2000-01-01"
+    period_end = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    result = run_trend_analysis(db, args.category, period_start, period_end, args.trend_keyword)
+
+    if result["status"] == "needs_llm":
+        print(f"\n=== TREND ANALYSIS: {args.category} ===")
+        print(f"Period: {period_start} — {period_end}")
+        print(f"\nAggregated data ready. {result['sql_data']['aggregates']['total_articles']} articles found.")
+        print(f"\nFormatted data for LLM interpretation:\n")
+        print(result["formatted"])
+        print(f"\nParams hash: {result['params_hash']}")
+        print("\nTo save LLM interpretation:")
+        print(f"  --save-trend-interpretation <hash> \"your interpretation text\"")
+    else:
+        print(result["interpretation"])
+
+    return 0
+
+
+def _handle_digest(args, db: Database) -> int:
+    if not args.category:
+        logger.error("--category is required for --digest")
+        return 1
+
+    interests_dir = args.interests_dir or Path("../../../interests/hackaday-blog-radar")
+    interests_path = Path(interests_dir)
+
+    if not interests_path.exists():
+        logger.error("Interests directory not found: %s", interests_path)
+        return 1
+
+    interest_files = sorted(interests_path.glob("*.md"))
+    if not interest_files:
+        logger.error("No interest files (*.md) found in %s", interests_path)
+        return 1
+
+    period_start = args.since or "2000-01-01"
+    period_end = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rubric_hash = compute_rubric_hash(DEFAULT_ANALYZE_CONFIG["criteria"])
+
+    print(f"\n=== DIGEST: {args.category} ===")
+    print(f"Period: {period_start} — {period_end}")
+    print(f"Interest files: {[f.stem for f in interest_files]}")
+    print(f"")
+
+    for f in interest_files:
+        query_name = f.stem
+        query_text = f.read_text(encoding="utf-8").strip()
+        query_hash = compute_query_hash(query_text)
+
+        status = db.get_search_status(args.category, query_hash, rubric_hash)
+        scored = status["by_status"].get("scored", 0)
+
+        print(f"[{query_name}] scored: {scored}/{status['total_articles']}")
+
+        if scored > 0:
+            report_path = generate_digest_report(
+                db, args.category, query_name, query_text,
+                query_hash, rubric_hash,
+                period_start, period_end,
+                top=args.top or 5,
+            )
+            print(f"  Digest saved: {report_path}")
+        else:
+            print(f"  No scored results. Run search for this query first.")
+        print()
 
     return 0
 
@@ -436,6 +593,9 @@ def create_parser() -> argparse.ArgumentParser:
             "  %(prog)s --info                            # Show database status\n"
             "  %(prog)s --db-schema                       # Show DB schema\n"
             "  %(prog)s --db-summary -c led-hacks         # Show DB summary for category\n"
+            "  %(prog)s --search \"LED matrix\" -c led-hacks  # Ad-hoc search\n"
+            "  %(prog)s --trends -c led-hacks --since 2025-01-01       # Trend analysis\n"
+            "  %(prog)s --digest -c led-hacks --since 2025-01-01       # Interest digest\n"
         ),
     )
 
@@ -466,16 +626,27 @@ def create_parser() -> argparse.ArgumentParser:
     db_group.add_argument("--db-search", type=str, metavar="KEYWORD", help="Search articles by keyword")
     db_group.add_argument("--db-query", type=str, metavar="SQL", help="Execute a SELECT query")
 
-    analysis = parser.add_argument_group("Analysis options")
+    analysis = parser.add_argument_group("Search pipeline")
     analysis.add_argument("--query-file", type=str, metavar="PATH", help="Path to a query file")
-    analysis.add_argument("--stage", type=str, choices=["filter", "rerank"], help="Analysis stage")
-    analysis.add_argument("--analysis-candidates", action="store_true", help="List candidates for analysis")
-    analysis.add_argument("--save-analysis", type=str, metavar="PATH", help="Save analysis results from JSON file")
-    analysis.add_argument("--analysis-report", action="store_true", help="Print ranked analysis report")
-    analysis.add_argument("--analysis-status", action="store_true", help="Show analysis progress")
-    analysis.add_argument("--mark-all-kept", action="store_true", help="Mark all filter candidates as kept")
+    analysis.add_argument("--stage", type=str, choices=["filter", "rerank"], help="Pipeline stage")
+    analysis.add_argument("--search-candidates", action="store_true", help="List search candidates")
+    analysis.add_argument("--batch", type=int, default=None, metavar="N", help="Batch number for candidates")
+    analysis.add_argument("--search-save", type=str, metavar="PATH", help="Save search results from JSON file")
+    analysis.add_argument("--search-report", action="store_true", help="Print ranked search report")
+    analysis.add_argument("--search-status", action="store_true", help="Show search progress")
+    analysis.add_argument("--search-skip-filter", action="store_true", help="Skip filter stage, mark all as kept")
+    analysis.add_argument("--search", type=str, metavar="TEXT", help="Ad-hoc search query")
     analysis.add_argument("--top", type=int, metavar="N", help="Limit report to top N")
     analysis.add_argument("--min-total", type=int, default=0, metavar="N", help="Minimum total score")
+
+    trends = parser.add_argument_group("Trend analysis")
+    trends.add_argument("--trends", action="store_true", help="Analyze trends over a period")
+    trends.add_argument("--trend-keyword", type=str, metavar="KEYWORD", help="Focus trend analysis on a keyword")
+    trends.add_argument("--save-trend-interpretation", type=str, nargs=2, metavar=("HASH", "TEXT"), help="Save LLM trend interpretation")
+
+    digest = parser.add_argument_group("Interest digest")
+    digest.add_argument("--digest", action="store_true", help="Generate period digest from interest files")
+    digest.add_argument("--interests-dir", type=str, metavar="PATH", help="Directory with interest .md files")
 
     config = parser.add_argument_group("Configuration")
     config.add_argument("--workers", type=int, help="Parallel workers")
@@ -697,10 +868,25 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Exported to %s", output)
         return 0
 
-    # Analysis pipeline
-    if (args.analysis_candidates or args.save_analysis or args.analysis_report
-            or args.analysis_status or args.mark_all_kept):
-        return _handle_analysis(args, db)
+    # New mode handlers
+    if args.search:
+        return _handle_search(args, db)
+    if args.trends:
+        return _handle_trends(args, db)
+    if args.digest:
+        return _handle_digest(args, db)
+    if args.save_trend_interpretation:
+        params_hash, interpretation = args.save_trend_interpretation
+        period_start = args.since or "2000-01-01"
+        period_end = args.until or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        save_trend_interpretation(db, args.category, params_hash, period_start, period_end, interpretation)
+        print("Trend interpretation saved.")
+        return 0
+
+    # Analysis pipeline (legacy/advanced)
+    if (args.search_candidates or args.search_save or args.search_report
+            or args.search_status or args.search_skip_filter):
+        return _handle_search_pipeline(args, db)
 
     if not args.category:
         parser.print_help()

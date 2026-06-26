@@ -167,4 +167,4 @@ SQLite at `data/hackaday.db`. Tables:
 - `comments` — article comments
 - `scrape_sessions` — scrape session tracking
 - `pages` — per-page scrape progress
-- `analysis_scores` — semantic analysis cache (query hashes, filter status, scores)
+- `search_scores` — search cache (query hashes, filter status, scores)
