@@ -1,4 +1,6 @@
+# Root venv (single source of truth for all code)
 .venv/
+.agents/.venv/
 __pycache__/
 *.pyc
 *.pyo

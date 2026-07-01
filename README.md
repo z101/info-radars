@@ -33,17 +33,26 @@ python hackaday_blog_radar.py --category led-hacks
 
 ```
 info-radar/
-├── .venv/                         # shared virtual environment
+├── .venv/                           # shared virtual environment
+├── .temp/                           # agent reference cache (git-ignored)
 ├── .agents/
 │   ├── skills/
-│   │   ├── hackaday-blog-radar/    # self-contained radar skill
-│   │   │   ├── SKILL.md           # AI instructions
-│   │   │   ├── hackaday_blog_radar.py  # entry point
-│   │   │   ├── scraper/           # scraping engine
-│   │   │   ├── tests/             # pytest suite
-│   │   │   ├── data/              # SQLite database
-│   │   └── info-radar-generator/  # meta-skill for scaffolding new radars
+│   │   ├── hackaday-blog-radar/      # self-contained radar skill
+│   │   │   ├── SKILL.md             # AI instructions
+│   │   │   ├── hackaday_blog_radar.py    # entry point
+│   │   │   ├── scraper/             # scraping engine
+│   │   │   ├── tests/               # pytest suite
+│   │   │   └── data/                # SQLite database
+│   │   └── sqlite-query/            # NL→SQL skill for ad-hoc DB queries
+│   │       ├── SKILL.md
+│   │       ├── SPEC.md              # design specification
+│   │       └── scripts/
 │   └── node_modules/
+├── queries/                         # user-editable relevance queries
+│   └── hackaday-blog-radar/
+├── reports/                         # generated analysis reports (git-ignored)
+│   └── hackaday-blog-radar/
+├── opencode.json                    # opencode permission rules
 ├── .gitignore
 ├── AGENTS.md
 └── README.md

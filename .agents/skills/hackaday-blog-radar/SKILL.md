@@ -25,7 +25,7 @@ free-text request into the correct CLI invocation, run it, report results, and o
    that is easily rebuilt — use it liberally.
 2. **Scalable**: Single command for small requests, orchestration loop for large
    datasets. Python for chunking, Agent for spawning subagents.
-3. **Efficient**: Minimize questions. Infer intent aggressively. Always ask user if category is ambiguous.
+3. **Efficient**: Minimize questions. Infer intent aggressively. Never ask questions during cache update — execute immediately.
 4. **Safe**: Confirm before destructive actions (`--reset`).
 
 ## DB-First Workflow
@@ -56,6 +56,45 @@ free-text request into the correct CLI invocation, run it, report results, and o
 If the user's request can be answered from cached data — answer from cache, explain the source, and move on.
 
 ### Step 3: Dispatch to the right mode below
+
+---
+
+## Mode 0: Cache Update
+
+Triggered by: "обнови кэш", "update cache", "обнови", "refresh"
+
+**Workflow (без вопросов — сразу выполнить):**
+
+1. Получить список всех сохранённых категорий:
+   ```powershell
+   ..\..\..\.venv\Scripts\python src\main.py --list-categories
+   ```
+   Если категорий нет → вывести "Нет данных в БД." и остановиться.
+
+2. Для каждой категории:
+   - Получить дату последней статьи:
+     ```powershell
+     ..\..\..\.venv\Scripts\python src\main.py --since-date -c <slug>
+     ```
+   - Инкрементальный скрейпинг с полным текстом:
+     ```powershell
+     ..\..\..\.venv\Scripts\python src\main.py -c <slug> --since <date> -f
+     ```
+
+3. Вывести итог для каждой категории (без предложений дальнейших действий):
+   ```powershell
+   ..\..\..\.venv\Scripts\python src\main.py --db-summary -c <slug>
+   ```
+
+**Формат вывода:**
+- Если появились новые статьи:
+  ```
+  Кэш обновлён: <category> — <N> статей (с <DATE> по <DATE>)
+  ```
+- Если новых нет:
+  ```
+  Кэш актуален: <category> — последняя статья от <DATE>
+  ```
 
 ---
 
@@ -193,10 +232,15 @@ Your task — run the loop:
    - **Retry:** invalid JSON → retry up to 2 times
 
 3. **Save the result:**
-   - Write the JSON response to a temp file
-   - ```powershell
+   - Use `--search-save-stdin` (preferred — avoids temp file escaping issues):
+     ```
+     $json | ..\..\..\.venv\Scripts\python src\main.py --search-save-stdin --stage filter -c <slug> --query-file <path>
+     ```
+   - Or write JSON to a temp file and use `--search-save`:
+     ```powershell
      ..\..\..\.venv\Scripts\python src\main.py --search-save <tmpfile> --stage filter -c <slug> --query-file <path>
      ```
+   - For multiline/complex JSON with nested quotes or Unicode, always prefer `--search-save-stdin` over temp files — Python handles encoding natively.
 
 4. **Parallel spawn:** up to `parallel_agents` (usually 5) subagents at once.
 
@@ -285,12 +329,58 @@ If an interest file has no scores → run the Orchestration Loop for it first.
 
 ---
 
+## Mode 5: Batch Summarization
+
+Summarizes `content_md` into 3-5 sentence Russian descriptions stored in
+`articles.summary_ru`. Run this after scraping full text — it makes search
+candidates lighter and more informative.
+
+### Check status
+
+```powershell
+..\..\..\.venv\Scripts\python src\main.py --summarize-status -c <slug>
+```
+
+### Get a batch of candidates
+
+```powershell
+..\..\..\.venv\Scripts\python src\main.py --summarize-candidates -c <slug> --batch N --json
+..\..\..\.venv\Scripts\python src\main.py --summarize-candidates -c <slug> --batch N --batch-size 50 --json
+```
+
+Returns JSON array with `{id, title, content_md, url, date}` for articles
+that have `content_md` but no `summary_ru` yet.
+
+### Save subagent results
+
+```powershell
+# From file
+..\..\..\.venv\Scripts\python src\main.py --summarize-save <file> -c <slug>
+
+# From stdin (preferred)
+$result | ..\..\..\.venv\Scripts\python src\main.py --summarize-save <(cat) ... 
+```
+
+Subagent returns: `[{"id": N, "summary_ru": "3-5 предложений на русском"}, ...]`
+
+### Orchestration Loop
+
+Same pattern as Search:
+
+1. Read a batch: `--summarize-candidates -c <slug> --batch N --json`
+2. Create a subagent with `{"id": N, "title": "…", "content_md": "…"}` for each article
+3. Return `[{"id": N, "summary_ru": "…"}, ...]`
+4. Save via `--summarize-save <file> -c <slug>` or pipe via stdin
+5. Repeat for N = 0..N
+
+Can be parallelized (up to 5 agents at once).
 
 ---
 
 ## Edge cases
 
-- **No articles in DB** → inform user, offer to scrape (`--max-pages 1`)
+- **No articles in DB** → report "Нет данных в БД." and stop
+- **No new articles after update** → report "Кэш актуален: <category> — последняя статья от <DATE>" and stop
 - **Corpus is metadata-only** → warn, suggest `--full-text-only`
 - **All candidates in cache** → report from DB, no LLM
 - **Subagent returned invalid JSON** → retry up to 2 times
@@ -306,7 +396,7 @@ If an interest file has no scores → run the Orchestration Loop for it first.
 - CWD must be this directory for relative paths
 - Tests: `pytest tests/ -v`
 - Full CLI docs: `src/README.md`
-- User docs + acceptance tests: `README.md` + `ACCEPTANCE.md`
+- User docs + acceptance tests: `references/README.md` + `references/ACCEPTANCE.md`
 - **Do not** create temporary scripts for DB queries — use `--db-*` flags
 - **Do not** ask unnecessary questions — make smart defaults
 
@@ -314,11 +404,13 @@ If an interest file has no scores → run the Orchestration Loop for it first.
 
 | User says | Action |
 |-----------|--------|
+| "обнови кэш", "update cache", "обнови", "refresh" | **Cache Update** | выполнить Mode 0 |
 | "latest LED hacks", "последние статьи" | `--latest N -c <slug>` → summarize |
 | "найди статьи про ESP32" | `--search "ESP32" -c led-hacks` |
 | "какие тренды за месяц" | `--trends -c led-hacks --since <date>` |
 | "еженедельная сводка" | `--digest -c led-hacks --since <date>` |
 | "заскрейпь категорию" | scraper flags |
+| "суммаризируй", "сделай summary" | `--summarize-status -c <slug>`, then batch summarization |
 | "схема БД" | `--db-schema` |
 | "статус" | `--db-summary` |
-| "найди по ID [42]" | `--db-query "SELECT ... WHERE id=42"` → summarize |
+| "найди по ID [42]" | use `sqlite-query` skill → summarize |

@@ -77,6 +77,8 @@ class Database:
         for r in rows:
             ch = compute_content_hash(r["content_md"], r["title"] or "", r["excerpt"] or "")
             self._execute("UPDATE articles SET content_hash = ? WHERE id = ?", (ch, r["id"]))
+        if "summary_ru" not in cols:
+            self._execute("ALTER TABLE articles ADD COLUMN summary_ru TEXT")
 
     # ------------------------------------------------------------------
     # Scrape sessions
@@ -719,17 +721,21 @@ class Database:
     ) -> list[dict]:
         rows = self._fetchall(
             """
-            SELECT a.id, a.title, a.date, a.url, cnt,
-                   ROUND(AVG(cnt) OVER (), 1) as avg_cnt,
-                   ROUND(AVG(cnt * cnt) OVER () - AVG(cnt) OVER () * AVG(cnt) OVER (), 1) as var_cnt
-            FROM (
-                SELECT a.id, a.title, a.date, a.url, COUNT(c.id) as cnt
-                FROM articles a
-                LEFT JOIN comments c ON c.article_id = a.id
-                WHERE a.category = ? AND a.date >= ? AND a.date <= ?
-                GROUP BY a.id
+            WITH stats AS (
+                SELECT id, title, date, url, cnt,
+                       ROUND(AVG(cnt) OVER (), 1) as avg_cnt,
+                       ROUND(AVG(cnt * cnt) OVER () - AVG(cnt) OVER () * AVG(cnt) OVER (), 1) as var_cnt
+                FROM (
+                    SELECT a.id, a.title, a.date, a.url, COUNT(c.id) as cnt
+                    FROM articles a
+                    LEFT JOIN comments c ON c.article_id = a.id
+                    WHERE a.category = ? AND a.date >= ? AND a.date <= ?
+                    GROUP BY a.id
+                )
             )
-            WHERE cnt > AVG(cnt) OVER () + ? * SQRT(AVG(cnt * cnt) OVER () - AVG(cnt) OVER () * AVG(cnt) OVER () + 0.0001)
+            SELECT id, title, date, url, cnt, avg_cnt, var_cnt
+            FROM stats
+            WHERE cnt > avg_cnt + ? * SQRT(var_cnt + 0.0001)
             ORDER BY cnt DESC
             LIMIT ?
             """,
@@ -795,6 +801,56 @@ class Database:
                 "excerpt": r["excerpt"] or "",
             })
         return result
+
+    # ------------------------------------------------------------------
+    # Summarization
+    # ------------------------------------------------------------------
+
+    def get_articles_for_summary(
+        self,
+        category: str,
+        batch: int,
+        batch_size: int = 100,
+    ) -> list[dict]:
+        rows = self._fetchall(
+            """
+            SELECT id, title, content_md, url, date
+            FROM articles
+            WHERE category = ?
+              AND content_md IS NOT NULL
+              AND content_md != ''
+              AND summary_ru IS NULL
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (category, batch_size, batch * batch_size),
+        )
+        return [dict(r) for r in rows]
+
+    def save_summary(self, article_id: int, summary_ru: str):
+        self._execute(
+            "UPDATE articles SET summary_ru = ? WHERE id = ?",
+            (summary_ru, article_id),
+        )
+
+    def get_summary_status(self, category: str) -> dict:
+        total = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM articles WHERE category = ?", (category,)
+        )["cnt"]
+        with_content = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM articles WHERE category = ? AND content_md IS NOT NULL AND content_md != ''",
+            (category,),
+        )["cnt"]
+        with_summary = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM articles WHERE category = ? AND summary_ru IS NOT NULL",
+            (category,),
+        )["cnt"]
+        return {
+            "total_articles": total,
+            "with_full_text": with_content,
+            "with_summary": with_summary,
+            "pending": with_content - with_summary,
+        }
 
     # ------------------------------------------------------------------
     # Trend cache

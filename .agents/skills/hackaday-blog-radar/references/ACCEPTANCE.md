@@ -108,8 +108,8 @@ python src/main.py --search "LED cube with ESP32" -c led-hacks --top 10
 оценке критерия `comment_signal` (см. Scoring criteria в SKILL.md).
 
 ```powershell
-# Найти статью с комментариями
-python src/main.py --db-query "SELECT id, title FROM articles WHERE id IN (SELECT article_id FROM comments GROUP BY article_id HAVING COUNT(*) > 5) LIMIT 1"
+# Найти статью с комментариями (через sqlite-query skill)
+# python .agents/skills/sqlite-query/scripts/executor.py "data/hackaday.db" "SELECT id, title FROM articles WHERE id IN (SELECT article_id FROM comments GROUP BY article_id HAVING COUNT(*) > 5) LIMIT 1"
 # Создать query-файл (если нет):
 # mkdir -p ../../../queries/hackaday-blog-radar
 # echo "LED projects with technical discussions" > ../../../queries/hackaday-blog-radar/test_comments.md

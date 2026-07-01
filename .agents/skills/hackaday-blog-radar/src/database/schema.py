@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS articles (
     content_md      TEXT,
     tags            TEXT,
     content_hash    TEXT,
+    summary_ru      TEXT,
     session_id      INTEGER REFERENCES scrape_sessions(id),
     loaded_at       TEXT NOT NULL,
     article_scraped_at TEXT,

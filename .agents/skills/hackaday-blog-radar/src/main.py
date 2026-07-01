@@ -271,6 +271,68 @@ def _resolve_hashes(args) -> tuple[str, str, str, str, dict]:
     return query_name, query_text, query_hash, rubric_hash, cfg
 
 
+def _save_search_results(
+    db: Database,
+    results: list,
+    args,
+    query_hash: str,
+    rubric_hash: str,
+    query_name: str,
+    query_text: str,
+) -> int:
+    saved = 0
+    errors = 0
+    for item in results:
+        article_id = item.get("id")
+        if article_id is None:
+            logger.warning("Skipping item without 'id': %s", item)
+            continue
+
+        row = db._fetchone(
+            "SELECT content_md, title, excerpt FROM articles WHERE id = ?", (article_id,)
+        )
+        if not row:
+            logger.warning("Article id=%s not found in DB", article_id)
+            continue
+
+        content_hash = compute_content_hash(row["content_md"], row["title"] or "", row["excerpt"] or "")
+
+        if "error" in item:
+            db.mark_search_error(
+                article_id, query_hash, rubric_hash, content_hash,
+                args.stage, str(item["error"]), query_name, query_text,
+            )
+            errors += 1
+            continue
+
+        if args.stage == "filter":
+            keep = bool(item.get("keep", True))
+            reason = item.get("reason", "")
+            db.save_search_filter(
+                article_id, query_hash, query_name, query_text,
+                rubric_hash, content_hash, keep, reason,
+            )
+            saved += 1
+        elif args.stage == "rerank":
+            scores = item.get("scores", {})
+            total = item.get("total", sum(scores.values()) if scores else 0)
+            comment = item.get("comment", "")
+            ok = db.save_search_score(
+                article_id, query_hash, rubric_hash,
+                scores, total, comment,
+            )
+            if ok:
+                saved += 1
+            else:
+                logger.warning("No active filter row for article id=%s; score skipped", article_id)
+                errors += 1
+
+    logger.info("Saved %d result(s), %d error(s) for stage=%s", saved, errors, args.stage)
+    if not args.json:
+        print(f"Saved {saved} result(s), {errors} error(s) for stage={args.stage}")
+    return 0
+
+
 def _handle_search_pipeline(args, db: Database) -> int:
     if not args.query_file:
         logger.error("--query-file is required for search commands")
@@ -343,6 +405,26 @@ def _handle_search_pipeline(args, db: Database) -> int:
         print(json.dumps(candidates, indent=2, ensure_ascii=False, default=str))
         return 0
 
+    if args.search_save_stdin:
+        if not args.category:
+            logger.error("--category is required for --search-save-stdin")
+            return 1
+        if not args.stage:
+            logger.error("--stage is required for --search-save-stdin")
+            return 1
+        if not args.query_file:
+            logger.error("--query-file is required for --search-save-stdin")
+            return 1
+        try:
+            results = json.loads(sys.stdin.read())
+        except json.JSONDecodeError as e:
+            logger.error("Invalid JSON from stdin: %s", e)
+            return 1
+        if not isinstance(results, list):
+            logger.error("Expected a JSON array from stdin")
+            return 1
+        return _save_search_results(db, results, args, query_hash, rubric_hash, query_name, query_text)
+
     if args.search_save:
         if not args.category:
             logger.error("--category is required for --search-save")
@@ -364,57 +446,7 @@ def _handle_search_pipeline(args, db: Database) -> int:
             logger.error("Expected a JSON array in %s", args.search_save)
             return 1
 
-        saved = 0
-        errors = 0
-        for item in results:
-            article_id = item.get("id")
-            if article_id is None:
-                logger.warning("Skipping item without 'id': %s", item)
-                continue
-
-            row = db._fetchone(
-                "SELECT content_md, title, excerpt FROM articles WHERE id = ?", (article_id,)
-            )
-            if not row:
-                logger.warning("Article id=%s not found in DB", article_id)
-                continue
-
-            content_hash = compute_content_hash(row["content_md"], row["title"] or "", row["excerpt"] or "")
-
-            if "error" in item:
-                db.mark_search_error(
-                    article_id, query_hash, rubric_hash, content_hash,
-                    args.stage, str(item["error"]), query_name, query_text,
-                )
-                errors += 1
-                continue
-
-            if args.stage == "filter":
-                keep = bool(item.get("keep", True))
-                reason = item.get("reason", "")
-                db.save_search_filter(
-                    article_id, query_hash, query_name, query_text,
-                    rubric_hash, content_hash, keep, reason,
-                )
-                saved += 1
-            elif args.stage == "rerank":
-                scores = item.get("scores", {})
-                total = item.get("total", sum(scores.values()) if scores else 0)
-                comment = item.get("comment", "")
-                ok = db.save_search_score(
-                    article_id, query_hash, rubric_hash,
-                    scores, total, comment,
-                )
-                if ok:
-                    saved += 1
-                else:
-                    logger.warning("No active filter row for article id=%s; score skipped", article_id)
-                    errors += 1
-
-        logger.info("Saved %d result(s), %d error(s) for stage=%s", saved, errors, args.stage)
-        if not args.json:
-            print(f"Saved {saved} result(s), {errors} error(s) for stage={args.stage}")
-        return 0
+        return _save_search_results(db, results, args, query_hash, rubric_hash, query_name, query_text)
 
     if args.search_report:
         if not args.category:
@@ -578,6 +610,60 @@ def _handle_digest(args, db: Database) -> int:
     return 0
 
 
+def _handle_summarize(args, db: Database) -> int:
+    if not args.category:
+        logger.error("--category is required for summarization")
+        return 1
+
+    if args.summarize_status:
+        status = db.get_summary_status(args.category)
+        print(f"\nSummarization status for '{args.category}':")
+        print(f"  Total articles:   {status['total_articles']}")
+        print(f"  With full text:   {status['with_full_text']}")
+        print(f"  With summary:     {status['with_summary']}")
+        print(f"  Pending:          {status['pending']}")
+        return 0
+
+    if args.summarize_candidates:
+        batch_size = args.batch_size or 100
+        batch = args.batch or 0
+        articles = db.get_articles_for_summary(args.category, batch, batch_size)
+        if not articles:
+            print("No articles pending summarization in this batch.")
+            return 0
+        print(json.dumps(articles, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    if args.summarize_save:
+        save_path = Path(args.summarize_save)
+        if not save_path.exists():
+            logger.error("File not found: %s", args.summarize_save)
+            return 1
+        try:
+            results = json.loads(save_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            logger.error("Invalid JSON in %s: %s", args.summarize_save, e)
+            return 1
+        if not isinstance(results, list):
+            logger.error("Expected a JSON array in %s", args.summarize_save)
+            return 1
+        saved = 0
+        for item in results:
+            article_id = item.get("id")
+            summary = item.get("summary_ru", "")
+            if article_id is None:
+                logger.warning("Skipping item without 'id'")
+                continue
+            db.save_summary(article_id, summary)
+            saved += 1
+        logger.info("Saved summaries for %d article(s)", saved)
+        if not args.json:
+            print(f"Saved summaries for {saved} article(s)")
+        return 0
+
+    return 0
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Scrape and analyze Hackaday articles by category",
@@ -624,7 +710,6 @@ def create_parser() -> argparse.ArgumentParser:
     db_group.add_argument("--db-schema", action="store_true", help="Show database schema")
     db_group.add_argument("--db-summary", action="store_true", help="Show summary of stored data")
     db_group.add_argument("--db-search", type=str, metavar="KEYWORD", help="Search articles by keyword")
-    db_group.add_argument("--db-query", type=str, metavar="SQL", help="Execute a SELECT query")
 
     analysis = parser.add_argument_group("Search pipeline")
     analysis.add_argument("--query-file", type=str, metavar="PATH", help="Path to a query file")
@@ -632,6 +717,7 @@ def create_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--search-candidates", action="store_true", help="List search candidates")
     analysis.add_argument("--batch", type=int, default=None, metavar="N", help="Batch number for candidates")
     analysis.add_argument("--search-save", type=str, metavar="PATH", help="Save search results from JSON file")
+    analysis.add_argument("--search-save-stdin", action="store_true", help="Save search results from stdin")
     analysis.add_argument("--search-report", action="store_true", help="Print ranked search report")
     analysis.add_argument("--search-status", action="store_true", help="Show search progress")
     analysis.add_argument("--search-skip-filter", action="store_true", help="Skip filter stage, mark all as kept")
@@ -647,6 +733,12 @@ def create_parser() -> argparse.ArgumentParser:
     digest = parser.add_argument_group("Interest digest")
     digest.add_argument("--digest", action="store_true", help="Generate period digest from interest files")
     digest.add_argument("--interests-dir", type=str, metavar="PATH", help="Directory with interest .md files")
+
+    summarize = parser.add_argument_group("Summarization")
+    summarize.add_argument("--summarize-candidates", action="store_true", help="List articles pending summarization")
+    summarize.add_argument("--summarize-save", type=str, metavar="PATH", help="Save summarization results from JSON file")
+    summarize.add_argument("--summarize-status", action="store_true", help="Show summarization progress")
+    summarize.add_argument("--batch-size", type=int, default=100, metavar="N", help="Batch size for candidates")
 
     config = parser.add_argument_group("Configuration")
     config.add_argument("--workers", type=int, help="Parallel workers")
@@ -780,37 +872,6 @@ def main(argv: list[str] | None = None) -> int:
             print()
         return 0
 
-    if args.db_query:
-        sql = args.db_query.strip()
-        if not sql:
-            logger.error("--db-query requires a SQL statement")
-            return 1
-        try:
-            rows = db.query(sql)
-            if args.json:
-                print(json.dumps(rows, indent=2, ensure_ascii=False, default=str))
-                return 0
-            if not rows:
-                print("Query returned no results.")
-                return 0
-            cols = list(rows[0].keys())
-            col_widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in rows)) for c in cols}
-            sep = "-+-".join("-" * col_widths[c] for c in cols)
-            header = " | ".join(c.ljust(col_widths[c]) for c in cols)
-            print(f"  {header}")
-            print(f"  {sep}")
-            for r in rows:
-                row_str = " | ".join(str(r.get(c, "")).ljust(col_widths[c]) for c in cols)
-                print(f"  {row_str}")
-            print(f"\n({len(rows)} row(s))")
-        except ValueError as e:
-            logger.error("Query rejected: %s", e)
-            return 1
-        except Exception as e:
-            logger.error("Query failed: %s", e)
-            return 1
-        return 0
-
     if args.list_categories:
         print("\nFetching available categories from Hackaday...")
         categories = fetch_available_categories(request_cfg)
@@ -882,9 +943,11 @@ def main(argv: list[str] | None = None) -> int:
         save_trend_interpretation(db, args.category, params_hash, period_start, period_end, interpretation)
         print("Trend interpretation saved.")
         return 0
+    if args.summarize_candidates or args.summarize_save or args.summarize_status:
+        return _handle_summarize(args, db)
 
     # Analysis pipeline (legacy/advanced)
-    if (args.search_candidates or args.search_save or args.search_report
+    if (args.search_candidates or args.search_save or args.search_save_stdin or args.search_report
             or args.search_status or args.search_skip_filter):
         return _handle_search_pipeline(args, db)
 

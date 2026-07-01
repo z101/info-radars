@@ -1,0 +1,11 @@
+{
+  "permission": {
+    "bash": {
+      "python .agents/skills/sqlite-query/setup_venv.py": "allow",
+      "python .agents/skills/sqlite-query/setup_venv.py *": "allow",
+      "echo * | python .agents/skills/sqlite-query/executor.py *": "allow",
+      "Get-Content * | python .agents/skills/sqlite-query/executor.py *": "allow",
+      "python .agents/skills/sqlite-query/executor.py *": "allow"
+    }
+  }
+}

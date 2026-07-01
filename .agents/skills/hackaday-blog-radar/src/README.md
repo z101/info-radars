@@ -42,7 +42,6 @@ python src/main.py --category led-hacks --full-text
 | `--db-schema` | | Show database schema — tables, columns, types |
 | `--db-summary` | optional `-c` | Show summary of stored data (article count, date range, sessions) |
 | `--db-search KEYWORD` | optional `-c` | Search articles by keyword in title, excerpt, and content |
-| `--db-query SQL` | | Execute an arbitrary SELECT query; only SELECT statements allowed |
 | `--json` | any `--db-*` | Output results as JSON instead of formatted table |
 
 ### Export options
@@ -118,9 +117,6 @@ python src/main.py --db-summary -c led-hacks
 ### Query database
 ```powershell
 python src/main.py --db-schema
-python src/main.py --db-query "SELECT title, date FROM articles WHERE category='led-hacks' LIMIT 5"
-python src/main.py --db-search "ESP32" -c led-hacks
-python src/main.py --db-query "SELECT COUNT(*) as cnt FROM comments" --json
 ```
 
 ### Export to JSON
