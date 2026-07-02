@@ -7,6 +7,8 @@ description: >
   "найди статьи за март", "сколько суммаризировано", "выполни запрос к базе",
   or provides a path to a .db / .sqlite file. Triggers: .db path, "база данных",
   "бд", "sqlite", "кеш", "сколько", "покажи из базы", "запрос к базе".
+invocation: auto
+priority: high on SQLite queries
 ---
 
 # SQLite Query Skill

@@ -44,6 +44,49 @@ python src/main.py --category led-hacks --full-text
 | `--db-search KEYWORD` | optional `-c` | Search articles by keyword in title, excerpt, and content |
 | `--json` | any `--db-*` | Output results as JSON instead of formatted table |
 
+### Search options
+
+| Flag | Requires | Description |
+|------|----------|-------------|
+| `--search "<text>"` | `-c` | Ad-hoc semantic search |
+| `--query-file <path>` | `-c` | Search by persistent query file |
+| `--top N` | | Limit results (default: 10) |
+| `--min-total N` | | Minimum total score threshold |
+
+Advanced pipeline access:
+
+| Flag | Description |
+|------|-------------|
+| `--search-candidates --stage filter\|rerank --batch N --json` | Read a batch of candidates |
+| `--search-save <file> --stage filter\|rerank` | Save subagent results from file |
+| `--search-save-stdin --stage filter\|rerank` | Save subagent results from stdin |
+| `--search-status -c <slug> --query-file <path>` | Show analysis status |
+| `--search-report -c <slug> --query-file <path> --top N` | Report from cache |
+| `--search-skip-filter -c <slug> --query-file <path>` | Skip triage stage |
+
+### Trend Analysis options
+
+| Flag | Requires | Description |
+|------|----------|-------------|
+| `--trends` | `-c` | Full trend analysis over period |
+| `--trend-keyword <word>` | with `--trends` | Focus on a keyword |
+| `--save-trend-interpretation <hash> <text>` | | Cache LLM interpretation |
+
+### Interest Digest options
+
+| Flag | Requires | Description |
+|------|----------|-------------|
+| `--digest` | `-c` | Generate digest by interest files |
+| `--interests-dir <path>` | with `--digest` | Custom interests directory |
+
+### Batch Summarization options
+
+| Flag | Requires | Description |
+|------|----------|-------------|
+| `--summarize-status` | `-c` | Show how many articles lack summary_ru |
+| `--summarize-candidates --batch N --json` | `-c` | Read a batch for summarization |
+| `--summarize-save <file>` | `-c` | Save subagent summaries from file |
+
 ### Export options
 
 | Flag | Requires | Description |
@@ -84,24 +127,16 @@ python src/main.py -c led-hacks --since 2025-01-01
 ```powershell
 python src/main.py -c led-hacks --until 2024-06-01
 ```
-Stops when all articles on a page are older than `2024-06-01`. Useful for grabbing a specific time window.
-
-### Combine since + until (narrow window)
-```powershell
-python src/main.py -c led-hacks --since 2024-01-01 --until 2024-06-01
-```
 
 ### Resume interrupted scrape
 ```powershell
 python src/main.py -c led-hacks
 ```
-Scraper resumes by skipping already-scraped pages.
 
 ### N newest pages
 ```powershell
 python src/main.py -c led-hacks --max-pages 3
 ```
-Scrapes only the 3 most recent archive pages (articles sorted newest to oldest).
 
 ### Dry run (validate before saving)
 ```powershell
@@ -114,9 +149,24 @@ python src/main.py --db-summary
 python src/main.py --db-summary -c led-hacks
 ```
 
-### Query database
+### Semantic search
 ```powershell
-python src/main.py --db-schema
+python src/main.py --search "LED cube with ESP32" -c led-hacks --top 10
+```
+
+### Trend analysis
+```powershell
+python src/main.py --trends -c led-hacks --since 2025-01-01
+```
+
+### Interest digest
+```powershell
+python src/main.py --digest -c led-hacks --since 2025-06-20 --until 2025-06-26
+```
+
+### Reset and re-scrape
+```powershell
+python src/main.py -c led-hacks --reset
 ```
 
 ### Export to JSON
@@ -124,12 +174,6 @@ python src/main.py --db-schema
 python src/main.py -c led-hacks --export-json
 python src/main.py -c led-hacks --export-json --since 2025-01-01
 ```
-
-### Reset and re-scrape
-```powershell
-python src/main.py -c led-hacks --reset
-```
-Prompts for confirmation before deleting.
 
 ## Output format
 
@@ -159,8 +203,9 @@ Date range: 2024-03-15 — 2025-06-01
 ## Database
 
 SQLite at `data/hackaday.db`. Tables:
-- `articles` — article metadata + content
+- `articles` — article metadata + content + summary_ru
 - `comments` — article comments
 - `scrape_sessions` — scrape session tracking
 - `pages` — per-page scrape progress
 - `search_scores` — search cache (query hashes, filter status, scores)
+- `trend_cache` — LLM interpretation cache

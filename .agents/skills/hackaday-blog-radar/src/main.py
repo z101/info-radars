@@ -38,6 +38,7 @@ from scraper.parser import (
     parse_article_page,
     validate_articles,
 )
+from xlsx_exporter import export_to_xlsx, import_from_xlsx
 
 logger = logging.getLogger(__name__)
 
@@ -664,6 +665,115 @@ def _handle_summarize(args, db: Database) -> int:
     return 0
 
 
+def _handle_interesting(args, db: Database) -> int:
+    if args.mark_interesting:
+        db.mark_interesting(args.mark_interesting)
+        print(f"Marked {len(args.mark_interesting)} article(s) as interesting.")
+        return 0
+
+    if args.unmark_interesting:
+        db.unmark_interesting(args.unmark_interesting)
+        print(f"Unmarked {len(args.unmark_interesting)} article(s) as interesting.")
+        return 0
+
+    if args.mark_read:
+        db.mark_read(args.mark_read)
+        print(f"Marked {len(args.mark_read)} article(s) as read.")
+        return 0
+
+    if args.unmark_read:
+        db.unmark_read(args.unmark_read)
+        print(f"Unmarked {len(args.unmark_read)} article(s) as read.")
+        return 0
+
+    if args.list_interesting:
+        if not args.category:
+            logger.error("--category is required for --list-interesting")
+            return 1
+        articles = db.get_interesting_articles(args.category)
+        if not articles:
+            print(f"No interesting articles for '{args.category}'.")
+            return 0
+        for a in articles:
+            tags = ", ".join(a["tags"]) if a["tags"] else "—"
+            read_mark = "[R]" if a["is_read"] else "   "
+            print(f"[{a['id']}] [I]{read_mark} {a['title']} ({a['date']})")
+            print(f"       {a['url']}")
+            if a["summary_ru"]:
+                print(f"       {a['summary_ru'][:200]}")
+            print()
+        return 0
+
+    if args.list_unread:
+        if not args.category:
+            logger.error("--category is required for --list-unread")
+            return 1
+        articles = db.get_unread_articles(args.category)
+        if not articles:
+            print(f"All articles read for '{args.category}'.")
+            return 0
+        for a in articles:
+            tags = ", ".join(a["tags"]) if a["tags"] else "—"
+            interesting_mark = "[I]" if a["is_interesting"] else "   "
+            print(f"[{a['id']}] {interesting_mark}[R] {a['title']} ({a['date']})")
+            print(f"       {a['url']}")
+            if a["summary_ru"]:
+                print(f"       {a['summary_ru'][:200]}")
+            print()
+        return 0
+
+    if args.generate_query_from_interesting:
+        if not args.category:
+            logger.error("--category is required for --generate-query-from-interesting")
+            return 1
+        articles = db.get_interesting_articles(args.category)
+        if not articles:
+            print(f"No interesting articles for '{args.category}'. Mark some first.")
+            return 1
+
+        fmt_articles = "\n\n".join(
+            f"Title: {a['title']}\nDate: {a['date']}\nTags: {', '.join(a['tags'])}\n"
+            f"Summary: {a['summary_ru'] or '—'}\nURL: {a['url']}"
+            for a in articles
+        )
+
+        prompt = DEFAULT_ANALYZE_CONFIG["prompt_interesting_to_query"].format(
+            articles=fmt_articles,
+        )
+        print("=== Articles for query generation ===")
+        print(f"Found {len(articles)} interesting articles.")
+        print(f"\nPrompt for subagent:\n{prompt}\n")
+        print("(Subagent call goes here — returns query text)")
+        print("Save result to interests/hackaday-blog-radar/<name>.md")
+        return 0
+
+    if args.export_xlsx:
+        if not args.category:
+            logger.error("--category is required for --export-xlsx")
+            return 1
+        filter_mode = args.filter or "all"
+        articles = db.get_articles_for_export(args.category, filter_mode)
+        if not articles:
+            print(f"No articles to export for '{args.category}' (filter={filter_mode}).")
+            return 0
+        today = datetime.now().strftime("%Y-%m-%d")
+        reports_dir = Path("../../../reports/hackaday-blog-radar")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        output_path = reports_dir / f"{args.category}_articles_{today}.xlsx"
+        export_to_xlsx(articles, str(output_path))
+        print(f"Exported {len(articles)} articles to {output_path}")
+        return 0
+
+    if args.import_xlsx:
+        result = import_from_xlsx(args.import_xlsx, db)
+        print(f"Import complete: {result['total_rows']} rows processed.")
+        print(f"  is_interesting updated: {result['updated_interesting']}")
+        print(f"  is_read updated:        {result['updated_read']}")
+        return 0
+
+    return 0
+
+
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Scrape and analyze Hackaday articles by category",
@@ -682,6 +792,12 @@ def create_parser() -> argparse.ArgumentParser:
             "  %(prog)s --search \"LED matrix\" -c led-hacks  # Ad-hoc search\n"
             "  %(prog)s --trends -c led-hacks --since 2025-01-01       # Trend analysis\n"
             "  %(prog)s --digest -c led-hacks --since 2025-01-01       # Interest digest\n"
+            "  %(prog)s --mark-interesting 42 57 -c led-hacks  # Mark articles\n"
+            "  %(prog)s --list-interesting -c led-hacks         # Show interesting\n"
+            "  %(prog)s --mark-read 42 -c led-hacks            # Mark as read\n"
+            "  %(prog)s --list-unread -c led-hacks             # Show unread\n"
+            "  %(prog)s --export-xlsx -c led-hacks --filter unread  # Export to Excel\n"
+            "  %(prog)s --import-xlsx reports/hackaday-blog-radar/led-hacks_articles_2026-07-03.xlsx  # Import flags\n"
         ),
     )
 
@@ -739,6 +855,20 @@ def create_parser() -> argparse.ArgumentParser:
     summarize.add_argument("--summarize-save", type=str, metavar="PATH", help="Save summarization results from JSON file")
     summarize.add_argument("--summarize-status", action="store_true", help="Show summarization progress")
     summarize.add_argument("--batch-size", type=int, default=100, metavar="N", help="Batch size for candidates")
+
+    interesting = parser.add_argument_group("Interesting / Read flags")
+    interesting.add_argument("--mark-interesting", type=int, nargs="+", metavar="ID", help="Mark article(s) as interesting")
+    interesting.add_argument("--unmark-interesting", type=int, nargs="+", metavar="ID", help="Unmark article(s) as interesting")
+    interesting.add_argument("--mark-read", type=int, nargs="+", metavar="ID", help="Mark article(s) as read")
+    interesting.add_argument("--unmark-read", type=int, nargs="+", metavar="ID", help="Unmark article(s) as read")
+    interesting.add_argument("--list-interesting", action="store_true", help="List interesting articles")
+    interesting.add_argument("--list-unread", action="store_true", help="List unread articles")
+    interesting.add_argument("--generate-query-from-interesting", action="store_true", help="Generate interest query from marked articles")
+
+    xlsx = parser.add_argument_group("Excel export / import")
+    xlsx.add_argument("--export-xlsx", action="store_true", help="Export articles to Excel")
+    xlsx.add_argument("--import-xlsx", type=str, metavar="PATH", help="Import article flags from Excel file")
+    xlsx.add_argument("--filter", type=str, choices=["all", "unread", "interesting"], default="all", help="Filter for export")
 
     config = parser.add_argument_group("Configuration")
     config.add_argument("--workers", type=int, help="Parallel workers")
@@ -898,7 +1028,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         for a in articles:
             tags = ", ".join(a["tags"]) if a["tags"] else "\u2014"
-            print(f"[{a['id']}] {a['title']} ({a['date']})")
+            i_mark = "[I]" if a.get("is_interesting") else "   "
+            r_mark = "[R]" if a.get("is_read") else "   "
+            print(f"[{a['id']}] {i_mark}{r_mark} {a['title']} ({a['date']})")
             print(a["url"])
             print(f"Tags: {tags}")
             print()
@@ -945,6 +1077,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.summarize_candidates or args.summarize_save or args.summarize_status:
         return _handle_summarize(args, db)
+
+    # Interesting / Read flags
+    if (args.mark_interesting is not None or args.unmark_interesting is not None
+            or args.mark_read is not None or args.unmark_read is not None
+            or args.list_interesting or args.list_unread
+            or args.generate_query_from_interesting
+            or args.export_xlsx or args.import_xlsx):
+        return _handle_interesting(args, db)
 
     # Analysis pipeline (legacy/advanced)
     if (args.search_candidates or args.search_save or args.search_save_stdin or args.search_report

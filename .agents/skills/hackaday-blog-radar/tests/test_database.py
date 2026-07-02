@@ -713,3 +713,97 @@ class TestContentHashInvalidation:
 @pytest.fixture
 def tmp_db():
     return Database(":memory:")
+
+
+# ---------------------------------------------------------------------------
+# Interesting / Read flags
+# ---------------------------------------------------------------------------
+
+class TestInterestingRead:
+    def test_mark_interesting(self, db):
+        aid, _ = _seed_article(db)
+        db.mark_interesting([aid])
+        row = db._fetchone("SELECT is_interesting FROM articles WHERE id=?", (aid,))
+        assert row["is_interesting"] == 1
+
+    def test_unmark_interesting(self, db):
+        aid, _ = _seed_article(db)
+        db.mark_interesting([aid])
+        db.unmark_interesting([aid])
+        row = db._fetchone("SELECT is_interesting FROM articles WHERE id=?", (aid,))
+        assert row["is_interesting"] == 0
+
+    def test_mark_read(self, db):
+        aid, _ = _seed_article(db)
+        db.mark_read([aid])
+        row = db._fetchone("SELECT is_read FROM articles WHERE id=?", (aid,))
+        assert row["is_read"] == 1
+
+    def test_unmark_read(self, db):
+        aid, _ = _seed_article(db)
+        db.mark_read([aid])
+        db.unmark_read([aid])
+        row = db._fetchone("SELECT is_read FROM articles WHERE id=?", (aid,))
+        assert row["is_read"] == 0
+
+    def test_mark_interesting_multiple_ids(self, db):
+        aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")
+        aid2, _ = _seed_article(db, url="https://hackaday.com/a/2")
+        db.mark_interesting([aid1, aid2])
+        assert db._fetchone("SELECT is_interesting FROM articles WHERE id=?", (aid1,))["is_interesting"] == 1
+        assert db._fetchone("SELECT is_interesting FROM articles WHERE id=?", (aid2,))["is_interesting"] == 1
+
+    def test_get_interesting_articles(self, db):
+        aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")
+        aid2, _ = _seed_article(db, url="https://hackaday.com/a/2")
+        db.mark_interesting([aid1])
+        interesting = db.get_interesting_articles("led-hacks")
+        assert len(interesting) == 1
+        assert interesting[0]["id"] == aid1
+        assert interesting[0]["is_read"] is False
+
+    def test_get_unread_articles(self, db):
+        aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")
+        aid2, _ = _seed_article(db, url="https://hackaday.com/a/2")
+        db.mark_read([aid1])
+        unread = db.get_unread_articles("led-hacks")
+        assert len(unread) == 1
+        assert unread[0]["id"] == aid2
+
+    def test_get_unread_all_read(self, db):
+        aid, _ = _seed_article(db)
+        db.mark_read([aid])
+        unread = db.get_unread_articles("led-hacks")
+        assert len(unread) == 0
+
+    def test_get_articles_for_export_all(self, db):
+        aid, _ = _seed_article(db)
+        articles = db.get_articles_for_export("led-hacks", "all")
+        assert len(articles) == 1
+        assert articles[0]["id"] == aid
+        assert "is_interesting" in articles[0]
+        assert "is_read" in articles[0]
+        assert "title" in articles[0]
+        assert "summary_ru" in articles[0]
+
+    def test_get_articles_for_export_unread(self, db):
+        aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")
+        aid2, _ = _seed_article(db, url="https://hackaday.com/a/2")
+        db.mark_read([aid1])
+        articles = db.get_articles_for_export("led-hacks", "unread")
+        assert len(articles) == 1
+        assert articles[0]["id"] == aid2
+
+    def test_get_articles_for_export_interesting(self, db):
+        aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")
+        aid2, _ = _seed_article(db, url="https://hackaday.com/a/2")
+        db.mark_interesting([aid1])
+        articles = db.get_articles_for_export("led-hacks", "interesting")
+        assert len(articles) == 1
+        assert articles[0]["id"] == aid1
+
+    def test_empty_lists_noop(self, db):
+        db.mark_interesting([])
+        db.mark_read([])
+        db.unmark_interesting([])
+        db.unmark_read([])

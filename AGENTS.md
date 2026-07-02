@@ -13,13 +13,26 @@ All radars follow the same contract: `SKILL.md` with scrape + analyze instructio
 5. AI processes all articles via parallel subagents, scoring against the query.
 6. Writes report to `reports/<site>-radar/<query>_YYYY-MM-DD.md`.
 
-## Available Radars
+## Available Skills
 
-Discoverable by listing `.agents/skills/` for directories matching `*-radar/`.
+All skills live under `.agents/skills/<name>/`. Each has a `SKILL.md` with full instructions.
+
+| Skill | Directory | Auto-detection Triggers |
+|-------|-----------|------------------------|
+| **hackaday-blog-radar** | `.agents/skills/hackaday-blog-radar/` | User mentions hackaday.com, LED Hacks, 3D Printing Hacks, or wants to scrape articles |
+| **sqlite-query** | `.agents/skills/sqlite-query/` | User mentions `.db`/`.sqlite` path, "база данных", "бд", "sqlite", "кеш", "сколько записей", "покажи данные из базы", "выполни запрос", or asks about counts/stats/aggregations from a database |
+
+### Auto-detection Priority
+
+When the user asks about **data in a database** (counts, search, stats, SQL queries, `.db` file paths):
+
+1. **First** try to load `sqlite-query` — it handles ad-hoc DB queries
+2. **Only if** the question requires scraping new content (not querying existing data), use a domain radar skill instead
+
+Domain skills (`*-radar/`) are for scraping & analyzing articles. `sqlite-query` is for ad-hoc database queries against already-scraped SQLite databases.
 
 ## Notes
 
 - Use venv: `.venv\Scripts\activate`
 - Each skill is self-contained — run commands from within the skill directory
-- For SQLite queries (count, search, stats) — load `sqlite-query` skill, NOT the domain skill. Domain skills are for scraping/analyzing, not ad-hoc DB queries.
 - After loading any skill via the `skill` tool, always read `<skill_dir>/SKILL.md` from disk — the inline tool output may be truncated or outdated.

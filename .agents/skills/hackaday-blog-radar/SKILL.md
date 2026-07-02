@@ -396,7 +396,7 @@ Can be parallelized (up to 5 agents at once).
 - CWD must be this directory for relative paths
 - Tests: `pytest tests/ -v`
 - Full CLI docs: `src/README.md`
-- User docs + acceptance tests: `references/README.md` + `references/ACCEPTANCE.md`
+- Acceptance tests: `references/ACCEPTANCE.md`
 - **Do not** create temporary scripts for DB queries — use `--db-*` flags
 - **Do not** ask unnecessary questions — make smart defaults
 

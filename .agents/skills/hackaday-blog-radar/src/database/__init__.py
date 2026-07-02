@@ -79,6 +79,10 @@ class Database:
             self._execute("UPDATE articles SET content_hash = ? WHERE id = ?", (ch, r["id"]))
         if "summary_ru" not in cols:
             self._execute("ALTER TABLE articles ADD COLUMN summary_ru TEXT")
+        if "is_interesting" not in cols:
+            self._execute("ALTER TABLE articles ADD COLUMN is_interesting INTEGER DEFAULT 0")
+        if "is_read" not in cols:
+            self._execute("ALTER TABLE articles ADD COLUMN is_read INTEGER DEFAULT 0")
 
     # ------------------------------------------------------------------
     # Scrape sessions
@@ -261,7 +265,7 @@ class Database:
 
     def list_latest_articles(self, category: str, limit: int = 5):
         rows = self._fetchall(
-            "SELECT id, title, date, excerpt, tags, url, content_md FROM articles WHERE category = ? "
+            "SELECT id, title, date, excerpt, tags, url, content_md, is_interesting, is_read FROM articles WHERE category = ? "
             "ORDER BY date DESC LIMIT ?",
             (category, limit),
         )
@@ -275,6 +279,8 @@ class Database:
                 "tags": json.loads(r["tags"]) if r["tags"] else [],
                 "url": r["url"],
                 "content_md": r["content_md"],
+                "is_interesting": bool(r["is_interesting"]),
+                "is_read": bool(r["is_read"]),
             })
         return result
 
@@ -819,7 +825,7 @@ class Database:
             WHERE category = ?
               AND content_md IS NOT NULL
               AND content_md != ''
-              AND summary_ru IS NULL
+              AND (summary_ru IS NULL OR summary_ru = '')
             ORDER BY id
             LIMIT ? OFFSET ?
             """,
@@ -828,6 +834,8 @@ class Database:
         return [dict(r) for r in rows]
 
     def save_summary(self, article_id: int, summary_ru: str):
+        if summary_ru is not None and summary_ru.strip() == "":
+            summary_ru = None
         self._execute(
             "UPDATE articles SET summary_ru = ? WHERE id = ?",
             (summary_ru, article_id),
@@ -842,7 +850,7 @@ class Database:
             (category,),
         )["cnt"]
         with_summary = self._fetchone(
-            "SELECT COUNT(*) as cnt FROM articles WHERE category = ? AND summary_ru IS NOT NULL",
+            "SELECT COUNT(*) as cnt FROM articles WHERE category = ? AND summary_ru IS NOT NULL AND summary_ru != ''",
             (category,),
         )["cnt"]
         return {
@@ -851,6 +859,103 @@ class Database:
             "with_summary": with_summary,
             "pending": with_content - with_summary,
         }
+
+    # ------------------------------------------------------------------
+    # Interesting / Read flags
+    # ------------------------------------------------------------------
+
+    def _update_flag(self, ids: list[int], column: str, value: int):
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        self._execute(
+            f"UPDATE articles SET {column} = ? WHERE id IN ({placeholders})",
+            [value, *ids],
+        )
+
+    def mark_interesting(self, ids: list[int]):
+        self._update_flag(ids, "is_interesting", 1)
+
+    def unmark_interesting(self, ids: list[int]):
+        self._update_flag(ids, "is_interesting", 0)
+
+    def mark_read(self, ids: list[int]):
+        self._update_flag(ids, "is_read", 1)
+
+    def unmark_read(self, ids: list[int]):
+        self._update_flag(ids, "is_read", 0)
+
+    def get_interesting_articles(self, category: str) -> list[dict]:
+        rows = self._fetchall(
+            "SELECT id, title, date, url, author, tags, summary_ru, is_read "
+            "FROM articles WHERE category = ? AND is_interesting = 1 "
+            "ORDER BY date DESC",
+            (category,),
+        )
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "title": r["title"],
+                "date": r["date"],
+                "url": r["url"],
+                "author": r["author"],
+                "tags": json.loads(r["tags"]) if r["tags"] else [],
+                "summary_ru": r["summary_ru"],
+                "is_read": bool(r["is_read"]),
+            })
+        return result
+
+    def get_unread_articles(self, category: str) -> list[dict]:
+        rows = self._fetchall(
+            "SELECT id, title, date, url, author, tags, summary_ru, is_interesting "
+            "FROM articles WHERE category = ? AND is_read = 0 "
+            "ORDER BY date DESC",
+            (category,),
+        )
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "title": r["title"],
+                "date": r["date"],
+                "url": r["url"],
+                "author": r["author"],
+                "tags": json.loads(r["tags"]) if r["tags"] else [],
+                "summary_ru": r["summary_ru"],
+                "is_interesting": bool(r["is_interesting"]),
+            })
+        return result
+
+    def get_articles_for_export(
+        self, category: str,
+        filter_mode: str = "all",
+    ) -> list[dict]:
+        if filter_mode == "unread":
+            where = "WHERE category = ? AND is_read = 0"
+        elif filter_mode == "interesting":
+            where = "WHERE category = ? AND is_interesting = 1"
+        else:
+            where = "WHERE category = ?"
+        rows = self._fetchall(
+            f"SELECT id, is_interesting, is_read, title, date, url, summary_ru, tags, author "
+            f"FROM articles {where} ORDER BY date DESC",
+            (category,),
+        )
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "is_interesting": bool(r["is_interesting"]),
+                "is_read": bool(r["is_read"]),
+                "title": r["title"],
+                "date": r["date"],
+                "url": r["url"],
+                "summary_ru": r["summary_ru"],
+                "tags": json.loads(r["tags"]) if r["tags"] else [],
+                "author": r["author"],
+            })
+        return result
 
     # ------------------------------------------------------------------
     # Trend cache
