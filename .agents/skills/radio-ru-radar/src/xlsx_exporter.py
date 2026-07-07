@@ -8,72 +8,40 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 logger = logging.getLogger(__name__)
 
-# --- Base export config (--export-xlsx) ---
 BASE_COLUMNS = [
-    "id",
-    "is_interesting",
-    "is_read",
-    "author",
-    "date",
-    "url",
-    "tags",
-    "summary_ru",
-    "comments",
+    "id", "is_interesting", "is_read", "section", "author",
+    "date", "topic", "page", "url", "excerpt",
 ]
 
 BASE_HEADER_NAMES = {
-    "id": "id",
-    "is_interesting": "I",
-    "is_read": "R",
-    "author": "Author",
-    "date": "Date",
-    "url": "URL",
-    "tags": "Tags",
-    "summary_ru": "Summary",
-    "comments": "Comments",
+    "id": "id", "is_interesting": "I", "is_read": "R",
+    "section": "Section", "author": "Author",
+    "date": "Date", "topic": "Topic", "page": "Page",
+    "url": "URL", "excerpt": "Excerpt",
 }
 
 BASE_EDITABLE = {"is_interesting", "is_read"}
 
-# --- Search report config (--search-report) ---
 SEARCH_COLUMNS = [
-    "id",
-    "score",
-    "is_interesting",
-    "is_read",
-    "author",
-    "date",
-    "url",
-    "tags",
-    "summary_ru",
-    "comments",
-    "topical_relevance",
-    "technical_depth",
-    "practical_applicability",
-    "novelty",
-    "comment_signal",
+    "id", "score", "is_interesting", "is_read", "section", "author",
+    "date", "topic", "page", "url", "excerpt",
+    "topical_relevance", "technical_depth",
+    "practical_applicability", "novelty", "historical_value",
 ]
 
 SEARCH_HEADER_NAMES = {
-    "id": "id",
-    "score": "Score",
-    "is_interesting": "I",
-    "is_read": "R",
-    "author": "Author",
-    "date": "Date",
-    "url": "URL",
-    "tags": "Tags",
-    "summary_ru": "Summary",
-    "comments": "Comments",
+    "id": "id", "score": "Score", "is_interesting": "I", "is_read": "R",
+    "section": "Section", "author": "Author",
+    "date": "Date", "topic": "Topic", "page": "Page",
+    "url": "URL", "excerpt": "Excerpt",
     "topical_relevance": "Topical Relevance",
     "technical_depth": "Technical Depth",
     "practical_applicability": "Practical Applicability",
     "novelty": "Novelty",
-    "comment_signal": "Comment Signal",
+    "historical_value": "Historical Value",
 }
 
 SEARCH_EDITABLE = {"is_interesting", "is_read"}
-
 EDITABLE_HEADERS = {"I", "R"}
 
 THIN_BORDER = Border(
@@ -86,12 +54,6 @@ THIN_BORDER = Border(
 HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 EDITABLE_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-
-def _flatten_tags(tags) -> str:
-    if isinstance(tags, list):
-        return ", ".join(tags)
-    return str(tags) if tags else ""
 
 
 def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_names=None, editable=None) -> str:
@@ -120,9 +82,7 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
     for row_idx, article in enumerate(articles, 2):
         for col_idx, col_name in enumerate(columns, 1):
             val = article.get(col_name, "")
-            if col_name == "tags":
-                val = _flatten_tags(val)
-            elif col_name in ("is_interesting", "is_read"):
+            if col_name in ("is_interesting", "is_read"):
                 val = "Y" if val else ""
             elif col_name == "url" and val:
                 cell = ws.cell(row=row_idx, column=col_idx)
@@ -138,27 +98,17 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
             if col_name in editable:
                 cell.fill = EDITABLE_FILL
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif col_name == "summary_ru":
+            elif col_name == "excerpt":
                 cell.alignment = Alignment(
                     horizontal="left", vertical="top", wrap_text=True
                 )
 
     col_widths = {
-        "id": 7,
-        "score": 6,
-        "is_interesting": 3,
-        "is_read": 3,
-        "author": 18,
-        "date": 10,
-        "url": 5,
-        "tags": 30,
-        "summary_ru": 90,
-        "comments": 8,
-        "topical_relevance": 12,
-        "technical_depth": 12,
-        "practical_applicability": 14,
-        "novelty": 8,
-        "comment_signal": 10,
+        "id": 7, "score": 6, "is_interesting": 3, "is_read": 3,
+        "section": 18, "author": 18, "date": 10, "topic": 60,
+        "page": 5, "url": 5, "excerpt": 90,
+        "topical_relevance": 12, "technical_depth": 12,
+        "practical_applicability": 14, "novelty": 8, "historical_value": 10,
     }
     for col_idx, col_name in enumerate(columns, 1):
         w = col_widths.get(col_name, 10)
@@ -186,11 +136,8 @@ def import_from_xlsx(filepath: str, db) -> dict:
     for col in EDITABLE_HEADERS:
         if col not in col_map:
             raise ValueError(f"Required column '{col}' not found in {filepath}")
-
     if "id" not in col_map:
         raise ValueError("Required column 'id' not found")
-
-    db_col_map = {"id": "id", "I": "is_interesting", "R": "is_read"}
 
     updates_interesting = []
     updates_read = []

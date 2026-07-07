@@ -454,11 +454,11 @@ def _handle_search_pipeline(args, db: Database) -> int:
             logger.error("--category is required for --search-report")
             return 1
 
-        csv_path = generate_report(
+        xlsx_path = generate_report(
             db, args.category, query_name, query_hash, rubric_hash,
             min_total=args.min_total or 0, top=args.top,
         )
-        if csv_path is None:
+        if xlsx_path is None:
             print(f"No scored results yet for query '{query_name}' in category '{args.category}'.")
             print("Run the search pipeline first (filter + rerank stages).")
         return 0
@@ -494,7 +494,7 @@ def _handle_search(args, db: Database) -> int:
             db, args.category, query_name, query_hash, rubric_hash,
             min_total=args.min_total or 0, top=args.top or 20,
         )
-        csv_path = generate_report(
+        generate_report(
             db, args.category, query_name, query_hash, rubric_hash,
             min_total=args.min_total or 0, top=args.top,
         )
@@ -834,7 +834,7 @@ def create_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--batch", type=int, default=None, metavar="N", help="Batch number for candidates")
     analysis.add_argument("--search-save", type=str, metavar="PATH", help="Save search results from JSON file")
     analysis.add_argument("--search-save-stdin", action="store_true", help="Save search results from stdin")
-    analysis.add_argument("--search-report", action="store_true", help="Print ranked search report")
+    analysis.add_argument("--search-report", action="store_true", help="Generate XLSX ranked search report")
     analysis.add_argument("--search-status", action="store_true", help="Show search progress")
     analysis.add_argument("--search-skip-filter", action="store_true", help="Skip filter stage, mark all as kept")
     analysis.add_argument("--search", type=str, metavar="TEXT", help="Ad-hoc search query")

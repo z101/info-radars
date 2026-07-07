@@ -2,19 +2,24 @@
 
 Each file describes a relevance goal in free text. The agent reads the file and uses its content as `user_query` when running the analysis pipeline.
 
-Subdirectories are named after the skill: `queries/<skill-name>/<query-name>.md`.
+Files at the top level (`queries/<query>.md`) are **shared** — usable by any radar skill.
+Files in a subdirectory (`queries/<skill>/<query>.md`) are **skill-specific**.
+
+The agent resolves queries in this order:
+1. `queries/<query>.md` — shared query
+2. `queries/<site>-radar/<query>.md` — skill-specific fallback
 
 ## Usage
 
 ```
-find @../../../queries/hackaday-blog-radar/led_sculptures.md
+find @../../../queries/led_sculptures.md
 ```
 
 The agent will:
 1. Read the query file
 2. Run the filter → rerank pipeline against the scraped article corpus
 3. Save scores to the skill's database (keyed by query + rubric + content hashes)
-4. Output a ranked CSV report to `../../../reports/hackaday-blog-radar/`
+4. Output a ranked report to `../../../reports/<site>-radar/`
 
 ## Cache behaviour
 
@@ -25,5 +30,7 @@ The agent will:
 
 ## Adding a new query
 
-Create a new `.md` file in the skill's subdirectory with a plain-text description of what you are looking for.
+Create a new `.md` file with a plain-text description of what you are looking for.
+Place it at `queries/<query>.md` if it's relevant to multiple radars,
+or at `queries/<site>-radar/<query>.md` if it's specific to one skill.
 The filename (without extension) becomes the `query_name` used in report filenames.

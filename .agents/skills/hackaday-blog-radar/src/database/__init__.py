@@ -607,6 +607,8 @@ class Database:
     ) -> list[dict]:
         query = (
             "SELECT a.id, a.title, a.date, a.url, a.author, a.tags, "
+            "  a.is_interesting, a.is_read, "
+            "  (SELECT COUNT(*) FROM comments c WHERE c.article_id = a.id) AS comments, "
             "  s.scores_json, s.total, s.comment, s.filter_reason, s.status "
             "FROM search_scores s "
             "JOIN articles a ON a.id = s.article_id "
@@ -629,12 +631,15 @@ class Database:
                 "title": r["title"],
                 "date": r["date"],
                 "url": r["url"],
-                "author": r["author"],
+                "author": r["author"] or "",
                 "tags": tags,
+                "is_interesting": bool(r["is_interesting"]),
+                "is_read": bool(r["is_read"]),
+                "comments": r["comments"] or 0,
                 "scores": scores,
                 "total": r["total"],
-                "comment": r["comment"],
-                "filter_reason": r["filter_reason"],
+                "comment": r["comment"] or "",
+                "filter_reason": r["filter_reason"] or "",
             })
         return result
 
@@ -938,8 +943,9 @@ class Database:
         else:
             where = "WHERE category = ?"
         rows = self._fetchall(
-            f"SELECT id, is_interesting, is_read, title, date, url, summary_ru, tags, author "
-            f"FROM articles {where} ORDER BY date DESC",
+            f"SELECT a.id, a.is_interesting, a.is_read, a.summary_ru, a.date, a.url, a.tags, a.author, "
+            f"(SELECT COUNT(*) FROM comments c WHERE c.article_id = a.id) AS comments "
+            f"FROM articles a {where} ORDER BY a.date DESC",
             (category,),
         )
         result = []
@@ -948,12 +954,12 @@ class Database:
                 "id": r["id"],
                 "is_interesting": bool(r["is_interesting"]),
                 "is_read": bool(r["is_read"]),
-                "title": r["title"],
+                "summary_ru": r["summary_ru"],
                 "date": r["date"],
                 "url": r["url"],
-                "summary_ru": r["summary_ru"],
                 "tags": json.loads(r["tags"]) if r["tags"] else [],
-                "author": r["author"],
+                "author": r["author"] or "",
+                "comments": r["comments"] or 0,
             })
         return result
 

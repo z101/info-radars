@@ -49,7 +49,8 @@ info-radar/
 │   │       └── scripts/
 │   └── node_modules/
 ├── queries/                         # user-editable relevance queries
-│   └── hackaday-blog-radar/
+│   ├── led_sculptures.md            # shared (usable by any radar)
+│   └── <site>-radar/                # skill-specific query dirs
 ├── reports/                         # generated analysis reports (git-ignored)
 │   └── hackaday-blog-radar/
 ├── opencode.json                    # opencode permission rules

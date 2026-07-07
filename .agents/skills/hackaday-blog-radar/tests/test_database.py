@@ -783,8 +783,8 @@ class TestInterestingRead:
         assert articles[0]["id"] == aid
         assert "is_interesting" in articles[0]
         assert "is_read" in articles[0]
-        assert "title" in articles[0]
         assert "summary_ru" in articles[0]
+        assert "url" in articles[0]
 
     def test_get_articles_for_export_unread(self, db):
         aid1, _ = _seed_article(db, url="https://hackaday.com/a/1")

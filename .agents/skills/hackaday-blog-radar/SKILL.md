@@ -175,7 +175,7 @@ Scores articles for relevance against an arbitrary query. Cached in `search_scor
 ..\..\..\.venv\Scripts\python src\main.py --search "LED cube ESP32" -c led-hacks --top 10
 
 # Search via query file (version-controlled in git):
-..\..\..\.venv\Scripts\python src\main.py --query-file ../../../queries/hackaday-blog-radar/led_sculptures.md -c led-hacks --search --top 10
+..\..\..\.venv\Scripts\python src\main.py --query-file ../../../queries/led_sculptures.md -c led-hacks --search --top 10
 ```
 
 **Fast path:** All articles already scored → report from cache (instant, no LLM).

@@ -1,10 +1,10 @@
-import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from analyzer.config import DEFAULT_ANALYZE_CONFIG
 from database import Database
+from xlsx_exporter import export_to_xlsx, SEARCH_COLUMNS, SEARCH_HEADER_NAMES, SEARCH_EDITABLE
 
 
 def generate_report(
@@ -16,7 +16,7 @@ def generate_report(
     min_total: int = 0,
     top: int | None = None,
 ) -> str | None:
-    """Generate a CSV report. Returns the path to the file, or None if no data."""
+    """Generate an XLSX search report. Returns the path to the file, or None if no data."""
     report = db.get_search_report(
         category, query_hash, rubric_hash,
         min_total=min_total, top=top,
@@ -27,33 +27,38 @@ def generate_report(
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     reports_dir = Path("../../../reports/hackaday-blog-radar")
     reports_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = reports_dir / f"{category}_search_{query_name}_{today}.csv"
+    xlsx_path = reports_dir / f"{category}_search_{query_name}_{today}.xlsx"
 
     criteria_keys = list(DEFAULT_ANALYZE_CONFIG.get("criteria", {}).keys())
-    fieldnames = ["id", "title", "date", "url", "author", "tags"] + criteria_keys + ["total", "comment", "filter_reason"]
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for r in report:
-            row = {
-                "id": r["id"],
-                "title": r["title"],
-                "date": r["date"],
-                "url": r["url"],
-                "author": r["author"] or "",
-                "tags": ", ".join(r["tags"]) if r["tags"] else "",
-                "total": r["total"],
-                "comment": r["comment"] or "",
-                "filter_reason": r["filter_reason"] or "",
-            }
-            for k in criteria_keys:
-                row[k] = r["scores"].get(k, 0)
-            writer.writerow(row)
+    rows = []
+    for r in report:
+        row = {
+            "id": r["id"],
+            "score": r["total"],
+            "is_interesting": r["is_interesting"],
+            "is_read": r["is_read"],
+            "author": r["author"] or "",
+            "date": r["date"],
+            "url": r["url"],
+            "tags": r["tags"],
+            "summary_ru": r.get("summary_ru", ""),
+            "comments": r["comments"],
+        }
+        for k in criteria_keys:
+            row[k] = r["scores"].get(k, 0)
+        rows.append(row)
+
+    export_to_xlsx(
+        rows, str(xlsx_path),
+        columns=SEARCH_COLUMNS,
+        header_names=SEARCH_HEADER_NAMES,
+        editable=SEARCH_EDITABLE,
+    )
 
     print(f"\nAnalysis report: {len(report)} article(s) scored")
     print(f"Query: {query_name}")
-    print(f"Saved: {csv_path}")
+    print(f"Saved: {xlsx_path}")
     print()
 
     top_n = min(10, len(report))
@@ -66,7 +71,7 @@ def generate_report(
             print(f"       {r['comment'][:100]}")
         print()
 
-    return str(csv_path)
+    return str(xlsx_path)
 
 
 def generate_report_text(

@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+from openpyxl.styles import Alignment
 
 from database import Database
-from xlsx_exporter import export_to_xlsx, import_from_xlsx, COLUMNS, EDITABLE
+from xlsx_exporter import export_to_xlsx, import_from_xlsx, BASE_COLUMNS, BASE_HEADER_NAMES
 
 
 @pytest.fixture
@@ -43,7 +44,8 @@ class TestXlsxExport:
         wb = load_workbook(str(out))
         ws = wb.active
         header = [cell.value for cell in ws[1]]
-        assert header == list(COLUMNS)
+        expected = [BASE_HEADER_NAMES[c] for c in BASE_COLUMNS]
+        assert header == expected
 
     def test_export_data(self, tmp_path, db):
         aid, _ = _seed_article(db)
@@ -54,9 +56,8 @@ class TestXlsxExport:
         ws = wb.active
         row2 = [cell.value for cell in ws[2]]
         assert row2[0] == aid
-        assert row2[1] == 0
-        assert row2[2] == 0
-        assert "Art" in row2[3]
+        assert row2[1] is None or row2[1] == ""
+        assert row2[2] is None or row2[2] == ""
 
     def test_export_marked_interesting(self, tmp_path, db):
         aid, _ = _seed_article(db)
@@ -66,7 +67,35 @@ class TestXlsxExport:
         export_to_xlsx(articles, str(out))
         wb = load_workbook(str(out))
         ws = wb.active
-        assert ws.cell(2, 2).value == 1
+        assert ws.cell(2, 2).value == "Y"
+
+    def test_export_hyperlink(self, tmp_path, db):
+        _seed_article(db)
+        articles = db.get_articles_for_export("led-hacks")
+        out = tmp_path / "test.xlsx"
+        export_to_xlsx(articles, str(out))
+        wb = load_workbook(str(out))
+        ws = wb.active
+        url_col = list(BASE_COLUMNS).index("url") + 1
+        val = ws.cell(2, url_col).value
+        assert val is not None
+        assert "HYPERLINK" in str(val)
+        assert "hackaday.com" in str(val)
+        # Link text should be the URL itself, not a static string
+        assert "https://hackaday.com/a/" in str(val)
+
+    def test_export_summary_word_wrap(self, tmp_path, db):
+        long_summary = "This is a very long Russian summary that should wrap " * 5
+        _seed_article(db, summary_ru=long_summary)
+        articles = db.get_articles_for_export("led-hacks")
+        out = tmp_path / "test.xlsx"
+        export_to_xlsx(articles, str(out))
+        wb = load_workbook(str(out))
+        ws = wb.active
+        summary_col = list(BASE_COLUMNS).index("summary_ru") + 1
+        cell = ws.cell(2, summary_col)
+        assert cell.alignment.wrap_text is True
+        assert cell.value == long_summary
 
     def test_import_updates_flags(self, tmp_path, db):
         aid, _ = _seed_article(db, url="https://hackaday.com/b/")
@@ -115,6 +144,6 @@ class TestXlsxExport:
         export_to_xlsx(articles, str(out))
         wb = load_workbook(str(out))
         ws = wb.active
-        tags_col = list(COLUMNS).index("tags") + 1
+        tags_col = list(BASE_COLUMNS).index("tags") + 1
         val = ws.cell(ws.max_row, tags_col).value
         assert val == "led, esp32, matrix"
