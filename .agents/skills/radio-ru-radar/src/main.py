@@ -313,7 +313,6 @@ def fetch_missing_excerpts(
             updated = db.update_excerpts_batch(batch_items)
             fetched += updated
 
-        fetched += month_ok
         errors += month_err
 
         elapsed = time.time() - start_time

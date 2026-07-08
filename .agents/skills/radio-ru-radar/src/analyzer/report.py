@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from analyzer.config import DEFAULT_ANALYZE_CONFIG
+from scraper.parser import make_month_url
 from xlsx_exporter import export_to_xlsx, SEARCH_COLUMNS, SEARCH_HEADER_NAMES, SEARCH_EDITABLE
 
 
@@ -37,6 +38,7 @@ def generate_report(
             "is_interesting": r["is_interesting"],
             "is_read": r["is_read"],
             "date": f"{r['year']:04d}-{r['month']:02d}",
+            "month_url": make_month_url(r["year"], r["month"]),
             "url": r["detail_url"] or "",
             "pdf_url": r.get("pdf_url") or "",
             "page": r["page"] or "",

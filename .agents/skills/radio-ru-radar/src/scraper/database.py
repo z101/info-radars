@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from analyzer.hashes import compute_content_hash
+from scraper.parser import make_month_url
 
 logger = logging.getLogger(__name__)
 
@@ -528,6 +529,7 @@ class Database:
         result = []
         for r in rows:
             a = dict(r)
+            a["month_url"] = make_month_url(a["year"], a["month"])
             a["date"] = f"{a.pop('year'):04d}-{a.pop('month'):02d}"
             a["url"] = a.pop("detail_url") or ""
             a["pdf_url"] = a.pop("pdf_url") or ""

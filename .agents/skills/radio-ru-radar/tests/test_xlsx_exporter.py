@@ -58,7 +58,8 @@ class TestXlsxExport:
         wb = load_workbook(str(out))
         ws = wb.active
         col_map = {cell.value: idx for idx, cell in enumerate(ws[1])}
-        assert str(ws.cell(2, col_map["Date"] + 1).value) == "2026-04"
+        date_cell = str(ws.cell(2, col_map["Date"] + 1).value)
+        assert '"2026-04"' in date_cell
         assert ws.cell(2, col_map["URL"] + 1).value is not None
         assert ws.cell(2, col_map["Topic"] + 1).value == "My Topic"
 

@@ -55,10 +55,12 @@ def sample_excerpt_html() -> str:
     return """<!DOCTYPE html>
 <html><body>
 <h4>Аннотация статьи</h4>
-<p><b>Х. ЛОХНИ.</b> Новый УВЧ-УПЧ для приёмников «Океан-209» и Selena.</p>
-<p>В этой части статьи обсуждаются вопросы подбора радиоэлементов. Новый УВЧ-УПЧ позволит задействовать старые запасы катушек индуктивности, транзисторов и диодов, осталось их проверить и подобрать. Качество приёма существенно зависит от пьезокерамических фильтров (ПКФ), и без их тщательного отбора проект не реализовать. Приведены советы и примеры по этому вопросу.</p>
-<p><a href="http://ftp.radio.ru/pub/2025/10/13.pdf">Прочитать</a></p>
-<p><a href="/arhiv/2025/10.shtml"><b>Вернуться назад.</b></a></p>
+<table border="0" cellspacing="0" cellpadding="0" align="center" class="t_sod">
+<td width=100% valign=top align=justify><p><b>Х. ЛОХНИ.</b> Новый УВЧ-УПЧ для приёмников «Океан-209» и Selena.</p></td></tr>
+<td width=100% valign=top align=justify style="padding: 1px; border-bottom-style:solid; border-width:1px; border-color: #f0f0f0"><p>В этой части статьи обсуждаются вопросы подбора радиоэлементов. Новый УВЧ-УПЧ позволит задействовать старые запасы катушек индуктивности, транзисторов и диодов, осталось их проверить и подобрать. Качество приёма существенно зависит от пьезокерамических фильтров (ПКФ), и без их тщательного отбора проект не реализовать. Приведены советы и примеры по этому вопросу.</p>
+<p><a href="http://ftp.radio.ru/pub/2025/10/13.pdf">Прочитать</a></p></td></tr>
+<td width=100% valign=bottom align=center><font size=2 face=Arial><br><a href="/arhiv/2025/10.shtml"><b>Вернуться назад.</b></a></font></td></tr>
+</table>
 </body></html>"""
 
 
@@ -67,10 +69,12 @@ def sample_excerpt_with_pdf_html() -> str:
     return """<!DOCTYPE html>
 <html><body>
 <h4>Аннотация статьи</h4>
-<p><b>А. ГОЛЫШКО.</b> Улучшая 5G.</p>
-<p>Казалось бы, 2019 г. был совсем недавно и запомнился он развёртыванием совершенно новых на тот момент сетей мобильной связи пятого поколения (5G), о начале развития которых уже шла речь на страницах журнала.</p>
-<p><a href="http://ftp.radio.ru/pub/2025/10/4.pdf">Прочитать</a></p>
-<p><a href="/arhiv/2025/10.shtml"><b>Вернуться назад.</b></a></p>
+<table border="0" cellspacing="0" cellpadding="0" align="center" class="t_sod">
+<td width=100% valign=top align=justify><p><b>А. ГОЛЫШКО.</b> Улучшая 5G.</p></td></tr>
+<td width=100% valign=top align=justify style="padding: 1px; border-bottom-style:solid; border-width:1px; border-color: #f0f0f0"><p>Казалось бы, 2019 г. был совсем недавно и запомнился он развёртыванием совершенно новых на тот момент сетей мобильной связи пятого поколения (5G), о начале развития которых уже шла речь на страницах журнала.</p>
+<p><a href="http://ftp.radio.ru/pub/2025/10/4.pdf">Прочитать</a></p></td></tr>
+<td width=100% valign=bottom align=center><font size=2 face=Arial><br><a href="/arhiv/2025/10.shtml"><b>Вернуться назад.</b></a></font></td></tr>
+</table>
 </body></html>"""
 
 

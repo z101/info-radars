@@ -20,3 +20,5 @@ def setup_logging(log_level: str = "INFO") -> None:
     ch.setLevel(level)
     ch.setFormatter(fmt)
     root.addHandler(ch)
+
+    logging.getLogger("urllib3").setLevel(logging.WARNING)

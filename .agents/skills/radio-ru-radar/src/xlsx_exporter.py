@@ -89,6 +89,13 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
                 cell.value = f'=HYPERLINK("{val}", "{val}")'
                 cell.border = THIN_BORDER
                 continue
+            elif col_name == "date":
+                month_url = article.get("month_url", "")
+                if month_url:
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.value = f'=HYPERLINK("{month_url}", "{val}")'
+                    cell.border = THIN_BORDER
+                    continue
             elif val is None:
                 val = ""
 

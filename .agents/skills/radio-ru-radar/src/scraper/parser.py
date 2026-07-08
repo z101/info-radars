@@ -378,6 +378,19 @@ def parse_excerpt_page(html: str) -> str:
     if not header:
         return ""
 
+    table = header.find_next("table", class_="t_sod")
+    if table:
+        for p in table.find_all("p"):
+            txt = p.get_text(strip=True)
+            if not txt:
+                continue
+            if "Прочитать" in txt or "Вернуться" in txt:
+                continue
+            if p.find("b"):
+                continue
+            return txt
+        return ""
+
     paragraphs = []
     found_first = False
     for sibling in header.find_next_siblings():
