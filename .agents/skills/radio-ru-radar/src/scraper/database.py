@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS articles (
     pdf_url         TEXT,
     session_id      INTEGER REFERENCES scrape_sessions(id),
     loaded_at       TEXT NOT NULL,
+    format_type     TEXT,
+    has_d1          INTEGER DEFAULT 0,
     UNIQUE(year, month, topic)
 );
 
@@ -150,6 +152,10 @@ class Database:
             for r in rows:
                 ch = compute_content_hash(r["excerpt"], r["topic"] or "", r["author"] or "")
                 self._execute("UPDATE articles SET content_hash = ? WHERE id = ?", (ch, r["id"]))
+        if "format_type" not in cols:
+            self._execute("ALTER TABLE articles ADD COLUMN format_type TEXT")
+        if "has_d1" not in cols:
+            self._execute("ALTER TABLE articles ADD COLUMN has_d1 INTEGER DEFAULT 0")
 
     # Sessions
     def create_session(self) -> int:
@@ -252,27 +258,46 @@ class Database:
         session_id: int,
         loaded_at: str,
         pdf_url: str = "",
+        format_type: str = "",
+        has_d1: bool = False,
     ):
         ch = compute_content_hash(None, topic or "", author or "")
         self._execute(
             "INSERT OR IGNORE INTO articles "
-            "(year, month, section, topic, author, page, detail_url, pdf_url, session_id, loaded_at, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (year, month, section, topic, author, page, detail_url, pdf_url, session_id, loaded_at, ch),
+            "(year, month, section, topic, author, page, detail_url, pdf_url, "
+            " session_id, loaded_at, content_hash, format_type, has_d1) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (year, month, section, topic, author, page, detail_url, pdf_url,
+             session_id, loaded_at, ch, format_type, 1 if has_d1 else 0),
+        )
+
+    def update_article_metadata(
+        self,
+        year: int,
+        month: int,
+        section: str,
+        topic: str,
+        author: str,
+        page: str,
+        detail_url: str,
+    ):
+        self._execute(
+            "UPDATE articles SET section=?, author=?, page=?, detail_url=? "
+            "WHERE year=? AND month=? AND topic=?",
+            (section, author, page, detail_url, year, month, topic),
         )
 
     def update_excerpt(self, topic: str, year: int, month: int, excerpt: str):
-        self._execute(
-            "UPDATE articles SET excerpt = ? WHERE year = ? AND month = ? AND topic = ?",
-            (excerpt, year, month, topic),
-        )
         row = self._fetchone(
             "SELECT id, topic, author FROM articles WHERE year = ? AND month = ? AND topic = ?",
             (year, month, topic),
         )
         if row:
             ch = compute_content_hash(excerpt, row["topic"] or "", row["author"] or "")
-            self._execute("UPDATE articles SET content_hash = ? WHERE id = ?", (ch, row["id"]))
+            self._execute(
+                "UPDATE articles SET excerpt = ?, content_hash = ? WHERE id = ?",
+                (excerpt, ch, row["id"]),
+            )
 
     def update_pdf_url(self, topic: str, year: int, month: int, pdf_url: str):
         self._execute(
@@ -280,11 +305,85 @@ class Database:
             (pdf_url, year, month, topic),
         )
 
+    def upsert_articles_batch(
+        self,
+        articles: list[dict],
+        year: int,
+        month: int,
+        session_id: int,
+        loaded_at: str,
+        fmt: str,
+    ):
+        if not articles:
+            return
+        sql = (
+            "INSERT OR IGNORE INTO articles "
+            "(year, month, section, topic, author, page, detail_url, pdf_url, "
+            " session_id, loaded_at, content_hash, format_type, has_d1) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        params_list = []
+        for art in articles:
+            ch = compute_content_hash(
+                None, art.get("topic", "") or "", art.get("author", "") or "",
+            )
+            params_list.append((
+                year, month,
+                art.get("section", ""),
+                art.get("topic", ""),
+                art.get("author", ""),
+                art.get("page", ""),
+                art.get("detail_url", ""),
+                art.get("pdf_url", ""),
+                session_id, loaded_at, ch, fmt,
+                1 if art.get("has_d1") else 0,
+            ))
+        with self._lock:
+            conn = self._get_conn()
+            conn.executemany(sql, params_list)
+            conn.commit()
+
+    def update_excerpts_batch(self, items: list[tuple]) -> int:
+        """
+        items: list of (excerpt, topic, year, month)
+        Returns count of updated rows.
+        """
+        if not items:
+            return 0
+        updated = 0
+        with self._lock:
+            conn = self._get_conn()
+            for excerpt, topic, year, month in items:
+                row = conn.execute(
+                    "SELECT id, topic, author FROM articles "
+                    "WHERE year = ? AND month = ? AND topic = ?",
+                    (year, month, topic),
+                ).fetchone()
+                if row:
+                    ch = compute_content_hash(
+                        excerpt, row["topic"] or "", row["author"] or "",
+                    )
+                    conn.execute(
+                        "UPDATE articles SET excerpt = ?, content_hash = ? WHERE id = ?",
+                        (excerpt, ch, row["id"]),
+                    )
+                    updated += 1
+            conn.commit()
+        return updated
+
     def get_articles_without_excerpt(self, year: int, month: int) -> list[dict]:
         rows = self._fetchall(
             "SELECT id, topic, detail_url, year, month "
             "FROM articles WHERE year = ? AND month = ? "
             "AND (excerpt IS NULL OR excerpt = '') AND detail_url IS NOT NULL",
+            (year, month),
+        )
+        return [dict(r) for r in rows]
+
+    def get_articles_by_month(self, year: int, month: int) -> list[dict]:
+        rows = self._fetchall(
+            "SELECT id, topic, detail_url, year, month "
+            "FROM articles WHERE year = ? AND month = ? AND detail_url IS NOT NULL",
             (year, month),
         )
         return [dict(r) for r in rows]
@@ -314,6 +413,13 @@ class Database:
         year_range = self._fetchone(
             "SELECT MIN(year) as min_y, MAX(year) as max_y FROM articles"
         )
+        with_pdf = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM articles WHERE has_d1 = 1"
+        )["cnt"]
+        format_counts = self._fetchall(
+            "SELECT format_type, COUNT(*) as cnt FROM articles "
+            "WHERE format_type IS NOT NULL GROUP BY format_type"
+        )
         return {
             "total_articles": total_articles,
             "total_months": total_months,
@@ -321,6 +427,8 @@ class Database:
             "latest": date_range["latest"] if date_range else None,
             "year_range": (year_range["min_y"], year_range["max_y"]) if year_range else None,
             "with_excerpt": with_excerpt,
+            "with_pdf": with_pdf,
+            "format_breakdown": {r["format_type"]: r["cnt"] for r in format_counts},
         }
 
     def get_latest_articles(self, limit: int = 10) -> list[dict]:
@@ -414,13 +522,15 @@ class Database:
             where = ""
         rows = self._fetchall(
             f"SELECT id, is_interesting, is_read, year, month, section, topic, author, page, "
-            f"detail_url, excerpt "
+            f"detail_url, pdf_url, excerpt "
             f"FROM articles {where} ORDER BY year DESC, month DESC, id DESC"
         )
         result = []
         for r in rows:
             a = dict(r)
-            a["ym"] = f"{a['year']:04d}-{a['month']:02d}"
+            a["date"] = f"{a.pop('year'):04d}-{a.pop('month'):02d}"
+            a["url"] = a.pop("detail_url") or ""
+            a["pdf_url"] = a.pop("pdf_url") or ""
             result.append(a)
         return result
 
@@ -644,7 +754,7 @@ class Database:
     ) -> list[dict]:
         query = (
             "SELECT a.id, a.topic, a.author, a.section, a.page, a.year, a.month, "
-            "  a.detail_url, a.excerpt, a.is_interesting, a.is_read, "
+            "  a.detail_url, a.pdf_url, a.excerpt, a.is_interesting, a.is_read, "
             "  s.scores_json, s.total, s.comment, s.filter_reason, s.status "
             "FROM search_scores s "
             "JOIN articles a ON a.id = s.article_id "
@@ -669,6 +779,7 @@ class Database:
                 "year": r["year"],
                 "month": r["month"],
                 "detail_url": r["detail_url"] or "",
+                "pdf_url": r["pdf_url"] or "",
                 "excerpt": r["excerpt"] or "",
                 "is_interesting": bool(r["is_interesting"]),
                 "is_read": bool(r["is_read"]),

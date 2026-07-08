@@ -10,12 +10,13 @@ import requests
 
 @dataclass
 class RequestConfig:
-    timeout: int = 30
+    timeout: int = 3600
     delay_min: float = 0.5
     delay_max: float = 1.0
     backoff_factor: float = 2.0
     max_retries: int = 3
-    parallel_workers: int = 10
+    parallel_workers: int = 15
+    scan_parallel_months: int = 4
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "

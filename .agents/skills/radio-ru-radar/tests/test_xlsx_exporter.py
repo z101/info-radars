@@ -39,6 +39,29 @@ class TestXlsxExport:
         expected = [BASE_HEADER_NAMES[c] for c in BASE_COLUMNS]
         assert header == expected
 
+    def test_export_column_order(self, tmp_path, db):
+        _seed_article(db)
+        articles = db.get_articles_for_export("all")
+        out = tmp_path / "test.xlsx"
+        export_to_xlsx(articles, str(out))
+        wb = load_workbook(str(out))
+        ws = wb.active
+        header = [cell.value for cell in ws[1]]
+        assert header[:3] == ["id", "I", "R"]
+        assert header[3] == "Date"
+
+    def test_export_data_columns(self, tmp_path, db):
+        aid = _seed_article(db, topic="My Topic", author="A. Test")
+        articles = db.get_articles_for_export("all")
+        out = tmp_path / "test.xlsx"
+        export_to_xlsx(articles, str(out))
+        wb = load_workbook(str(out))
+        ws = wb.active
+        col_map = {cell.value: idx for idx, cell in enumerate(ws[1])}
+        assert str(ws.cell(2, col_map["Date"] + 1).value) == "2026-04"
+        assert ws.cell(2, col_map["URL"] + 1).value is not None
+        assert ws.cell(2, col_map["Topic"] + 1).value == "My Topic"
+
     def test_export_marked_interesting(self, tmp_path, db):
         aid = _seed_article(db)
         db.mark_interesting([aid])

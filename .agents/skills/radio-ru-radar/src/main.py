@@ -2,6 +2,8 @@ import argparse
 import json
 import logging
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,11 +27,15 @@ from scraper.fetcher import (
 )
 from scraper.logging import setup_logging
 from scraper.parser import (
+    FORMAT_THRESHOLD,
     decrement_month,
+    detect_format_type,
     extract_pdf_url,
+    make_excerpt_url,
     make_month_url,
     parse_content_page,
     parse_excerpt_page,
+    parse_excerpt_page_archive,
 )
 from xlsx_exporter import export_to_xlsx, import_from_xlsx
 
@@ -45,11 +51,16 @@ def scrape_month(
     session_id: int,
     request_cfg: RequestConfig,
     rate_limiter: AdaptiveRateLimiter,
-    with_excerpt: bool = False,
     dry_run: bool = False,
+    force: bool = False,
+    force_format: str = "",
 ) -> int:
-    url = make_month_url(year, month)
-    logger.info("Fetching %s ...", url)
+    if force_format == "archive":
+        url = f"http://www.radio.ru/archive/{year}/{month:02d}/"
+    elif force_format == "arhiv":
+        url = f"http://www.radio.ru/arhiv/{year}/{month}.shtml"
+    else:
+        url = make_month_url(year, month)
 
     try:
         html = fetch_html(url, request_cfg, rate_limiter)
@@ -59,7 +70,7 @@ def scrape_month(
             db.mark_month_error(year, month, session_id, str(e))
         return -1
 
-    articles = parse_content_page(html)
+    articles = parse_content_page(html, url=url, year=year)
     if not articles:
         logger.info("No articles found on %s", url)
         if not dry_run:
@@ -71,53 +82,46 @@ def scrape_month(
     if dry_run:
         return len(articles)
 
+    fmt = detect_format_type(year)
     now = datetime.now(timezone.utc).isoformat()
-    for art in articles:
-        db.upsert_article(
-            year=year,
-            month=month,
-            section=art.get("section", ""),
-            topic=art.get("topic", ""),
-            author=art.get("author", ""),
-            page=art.get("page", ""),
-            detail_url=art.get("detail_url", ""),
-            session_id=session_id,
-            loaded_at=now,
-        )
+
+    db.upsert_articles_batch(articles, year, month, session_id, now, fmt)
+
+    if force:
+        for art in articles:
+            db.update_article_metadata(
+                year=year,
+                month=month,
+                section=art.get("section", ""),
+                topic=art.get("topic", ""),
+                author=art.get("author", ""),
+                page=art.get("page", ""),
+                detail_url=art.get("detail_url", ""),
+            )
 
     db.mark_month_done(year, month, session_id, len(articles))
-
-    if with_excerpt:
-        articles_to_fetch = db.get_articles_without_excerpt(year, month)
-        if articles_to_fetch:
-            logger.info("Fetching excerpts for %d articles ...", len(articles_to_fetch))
-
-            def fetch_excerpt_worker(article_row, cfg, rl):
-                url = article_row["detail_url"]
-                html = fetch_html(url, cfg, rl)
-                excerpt = parse_excerpt_page(html)
-                pdf_url = extract_pdf_url(html)
-                return {"topic": article_row["topic"], "excerpt": excerpt, "pdf_url": pdf_url}
-
-            results = fetch_all_parallel(
-                articles_to_fetch,
-                fetch_excerpt_worker,
-                request_cfg,
-            )
-            for item, result, error in results:
-                if error:
-                    logger.warning("Failed excerpt for %s: %s", item["topic"], error)
-                    continue
-                if result.get("excerpt"):
-                    db.update_excerpt(
-                        result["topic"], year, month, result["excerpt"],
-                    )
-                if result.get("pdf_url"):
-                    db.update_pdf_url(
-                        result["topic"], year, month, result["pdf_url"],
-                    )
-
     return len(articles)
+
+
+def _scrape_month_safe(
+    db: Database,
+    year: int,
+    month: int,
+    session_id: int,
+    request_cfg: RequestConfig,
+    rate_limiter: AdaptiveRateLimiter,
+    dry_run: bool = False,
+    force: bool = False,
+    force_format: str = "",
+) -> int:
+    try:
+        return scrape_month(
+            db, year, month, session_id, request_cfg, rate_limiter,
+            dry_run, force, force_format,
+        )
+    except Exception as e:
+        logger.warning("Month %04d-%02d failed: %s", year, month, e)
+        return -1
 
 
 def auto_scan(
@@ -130,33 +134,100 @@ def auto_scan(
     max_404: int = MAX_CONSECUTIVE_404,
     with_excerpt: bool = False,
     dry_run: bool = False,
+    force: bool = False,
+    force_format: str = "",
 ) -> int:
-    year, month = start_year, start_month
+    return auto_scan_parallel(
+        db, session_id, request_cfg, rate_limiter,
+        start_year, start_month, max_404, dry_run, force, force_format,
+    )
+
+
+def auto_scan_parallel(
+    db: Database,
+    session_id: int,
+    request_cfg: RequestConfig,
+    rate_limiter: AdaptiveRateLimiter,
+    start_year: int,
+    start_month: int,
+    max_404: int = MAX_CONSECUTIVE_404,
+    dry_run: bool = False,
+    force: bool = False,
+    force_format: str = "",
+) -> int:
+    workers = min(request_cfg.scan_parallel_months, 6)
+    y, m = start_year, start_month
     consecutive_404 = 0
+    consecutive_empty = 0
     total_found = 0
     total_months = 0
+    max_empty = 25
 
-    while consecutive_404 < max_404:
-        if db.is_month_scraped(year, month):
-            logger.info("Skipping %04d-%02d (already scraped)", year, month)
-            year, month = decrement_month(year, month)
+    while consecutive_404 < max_404 and consecutive_empty < max_empty:
+        batch = []
+        scan_y, scan_m = y, m
+        while len(batch) < workers:
+            if not force:
+                while db.is_month_scraped(scan_y, scan_m):
+                    if scan_y < 1924:
+                        break
+                    scan_y, scan_m = decrement_month(scan_y, scan_m)
+            if scan_y < 1924:
+                break
+            batch.append((scan_y, scan_m))
+            scan_y, scan_m = decrement_month(scan_y, scan_m)
+            if len(batch) >= 50:
+                break
+
+        if not batch:
+            y, m = scan_y, scan_m
             continue
 
-        result = scrape_month(db, year, month, session_id, request_cfg, rate_limiter, with_excerpt, dry_run)
+        batch_results = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(
+                    _scrape_month_safe, db, by, bm, session_id,
+                    request_cfg, rate_limiter, dry_run, force, force_format,
+                ): (by, bm) for by, bm in batch
+            }
+            for future in as_completed(future_map):
+                by, bm = future_map[future]
+                batch_results.append((by, bm, future.result()))
 
-        if result == -1:
-            consecutive_404 += 1
-            if not dry_run:
-                db.mark_month_404(year, month, session_id, consecutive_404)
-            logger.info("Month %04d-%02d: 404 (%d consecutive)", year, month, consecutive_404)
-        elif result == 0:
-            if not dry_run:
-                db.mark_month_done(year, month, session_id, 0)
-            consecutive_404 = 0
-        else:
-            total_found += result
-            total_months += 1
-            consecutive_404 = 0
+        batch_results.sort(key=lambda x: (-x[0], -x[1]))
+        for by, bm, result in batch_results:
+            ts = datetime.now().strftime("%H:%M:%S")
+            if result == -1:
+                consecutive_404 += 1
+                consecutive_empty = 0
+                if not dry_run:
+                    db.mark_month_404(by, bm, session_id, consecutive_404)
+                logger.info("Month %04d-%02d: 404 (%d consecutive)", by, bm, consecutive_404)
+                print(f"[{ts}] \u2717 {by:04d}-{bm:02d} \u2014 404 ({consecutive_404}/{max_404})")
+                if consecutive_404 >= max_404:
+                    break
+            elif result == 0:
+                if by < FORMAT_THRESHOLD:
+                    consecutive_empty += 1
+                else:
+                    consecutive_empty = 0
+                if not dry_run:
+                    db.mark_month_done(by, bm, session_id, 0)
+                consecutive_404 = 0
+                logger.info("Month %04d-%02d: empty", by, bm)
+            else:
+                total_found += result
+                total_months += 1
+                consecutive_404 = 0
+                consecutive_empty = 0
+                logger.info("Month %04d-%02d: %d articles", by, bm, result)
+                print(f"[{ts}] \u2713 {by:04d}-{bm:02d} \u2014 {result} articles")
+
+        if consecutive_404 >= max_404 or consecutive_empty >= max_empty:
+            break
+
+        y, m = scan_y, scan_m
 
         if not dry_run:
             db.finish_session(
@@ -165,13 +236,133 @@ def auto_scan(
                 total_found=total_found,
             )
 
-        year, month = decrement_month(year, month)
-
+    stop_reason = (
+        f"{max_404} consecutive 404s" if consecutive_404 >= max_404
+        else f"{max_empty} consecutive empty months (pre-2010 TOC)"
+    )
     logger.info(
-        "Auto-scan complete: %d months, %d articles, stopped after %d consecutive 404s",
-        total_months, total_found, max_404,
+        "Auto-scan complete: %d months, %d articles, stopped after %s",
+        total_months, total_found, stop_reason,
     )
     return total_found
+
+
+def _make_excerpt_worker(year: int, month: int):
+    def worker(article_row, cfg, rl):
+        art_url = article_row["detail_url"]
+        if not art_url:
+            return {"topic": article_row["topic"], "excerpt": "", "pdf_url": ""}
+        html = fetch_html(art_url, cfg, rl)
+        if year >= FORMAT_THRESHOLD or "arhiv/" in art_url:
+            excerpt = parse_excerpt_page(html)
+            pdf_url = extract_pdf_url(html)
+        else:
+            excerpt = parse_excerpt_page_archive(html)
+            pdf_url = extract_pdf_url(html)
+        return {"topic": article_row["topic"], "excerpt": excerpt, "pdf_url": pdf_url}
+    return worker
+
+
+def fetch_missing_excerpts(
+    db: Database,
+    session_id: int,
+    request_cfg: RequestConfig,
+    dry_run: bool = False,
+) -> int:
+    rows = db.get_months_without_excerpts()
+    if not rows:
+        print("  All excerpts already fetched.")
+        return 0
+
+    total_articles = sum(
+        len(db.get_articles_without_excerpt(r["year"], r["month"])) for r in rows
+    )
+    if total_articles == 0:
+        print("  All excerpts already fetched.")
+        return 0
+
+    total_months = len(rows)
+    fetched = 0
+    errors = 0
+    start_time = time.time()
+
+    for idx, row in enumerate(rows, 1):
+        y, m = row["year"], row["month"]
+        articles_to_fetch = db.get_articles_without_excerpt(y, m)
+        if not articles_to_fetch:
+            continue
+
+        worker = _make_excerpt_worker(y, m)
+        results = fetch_all_parallel(articles_to_fetch, worker, request_cfg)
+
+        month_ok = 0
+        month_err = 0
+        batch_items = []
+        for item, result, error in results:
+            if error:
+                logger.warning("Failed excerpt for %s: %s", item["topic"], error)
+                month_err += 1
+                continue
+            if result.get("excerpt"):
+                batch_items.append((result["excerpt"], result["topic"], y, m))
+                month_ok += 1
+            if result.get("pdf_url"):
+                db.update_pdf_url(result["topic"], y, m, result["pdf_url"])
+
+        if batch_items:
+            updated = db.update_excerpts_batch(batch_items)
+            fetched += updated
+
+        fetched += month_ok
+        errors += month_err
+
+        elapsed = time.time() - start_time
+        pct = idx / total_months * 100
+        rate = fetched / elapsed if elapsed > 0 else 0
+        eta = (total_articles - fetched) / rate if rate > 0 else 0
+        bar_len = 20
+        filled = int(bar_len * idx / total_months)
+        bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
+        print(
+            f"\r  {bar}  {pct:3.0f}%  |  Month {idx}/{total_months} ({y:04d}-{m:02d})  "
+            f"|  {fetched}/{total_articles} excerpts  |  eta {eta:.0f}s  ",
+            end="", flush=True,
+        )
+
+    print()
+    if errors:
+        logger.info("Excerpt pass complete: %d fetched, %d errors across %d months", fetched, errors, total_months)
+    return fetched
+
+
+def _fetch_single_month_excerpts(
+    db: Database,
+    year: int,
+    month: int,
+    request_cfg: RequestConfig,
+    dry_run: bool = False,
+) -> int:
+    articles_to_fetch = db.get_articles_without_excerpt(year, month)
+    if not articles_to_fetch:
+        return 0
+    logger.info("Fetching excerpts for %04d-%02d (%d articles) ...", year, month, len(articles_to_fetch))
+
+    worker = _make_excerpt_worker(year, month)
+    results = fetch_all_parallel(articles_to_fetch, worker, request_cfg)
+
+    batch_items = []
+    for item, result, error in results:
+        if error:
+            logger.warning("Failed excerpt for %s: %s", item["topic"], error)
+            continue
+        if result.get("excerpt"):
+            batch_items.append((result["excerpt"], result["topic"], year, month))
+        if result.get("pdf_url"):
+            db.update_pdf_url(result["topic"], year, month, result["pdf_url"])
+
+    updated = db.update_excerpts_batch(batch_items) if batch_items else 0
+    logger.info("Fetched %d excerpts for %04d-%02d", updated, year, month)
+    return updated
 
 
 def show_summary(db: Database, json_output: bool = False):
@@ -188,6 +379,11 @@ def show_summary(db: Database, json_output: bool = False):
     if summary.get("earliest"):
         print(f"  Range:    {summary['earliest']} \u2014 {summary['latest']}")
     print(f"  With excerpt: {summary['with_excerpt']}")
+    print(f"  With PDF/DjVu: {summary['with_pdf']}")
+    if summary.get("format_breakdown"):
+        print(f"  Format breakdown:")
+        for fmt, cnt in sorted(summary["format_breakdown"].items()):
+            print(f"    {fmt:20s}: {cnt}")
     print()
 
 
@@ -559,10 +755,11 @@ def create_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  %(prog)s                                      # Auto-scan from current month\n"
             "  %(prog)s --year 2026 --month 4                 # Single month\n"
-            "  %(prog)s --auto-scan --with-excerpt            # Auto-scan with annotations\n"
             "  %(prog)s --since 2025-01 --until 2026-04       # Range\n"
             "  %(prog)s --db-summary                          # DB status\n"
             "  %(prog)s --dry-run --year 2026 --month 4       # Validate without saving\n"
+            "  %(prog)s --no-excerpt                          # Skip annotations\n"
+            "  %(prog)s --year 2026 --month 4 --force         # Re-scrape month\n"
             "  %(prog)s --search \"ESP32\" --top 10             # Semantic search\n"
             "  %(prog)s --export-xlsx                         # Export to Excel\n"
             "  %(prog)s --mark-interesting 5 12               # Mark articles as interesting\n"
@@ -576,11 +773,16 @@ def create_parser() -> argparse.ArgumentParser:
     scrape.add_argument("--month", type=int, metavar="M", help="Month to scrape (1-12)")
     scrape.add_argument("--since", type=str, metavar="YYYY-MM", help="Start date (inclusive)")
     scrape.add_argument("--until", type=str, metavar="YYYY-MM", help="End date (inclusive)")
-    scrape.add_argument("--with-excerpt", action="store_true", help="Fetch article annotations")
+    scrape.add_argument("--no-excerpt", action="store_true", help="Skip fetching article annotations")
     scrape.add_argument("--force-excerpt", action="store_true", help="Re-fetch missing excerpts for all scraped months")
+    scrape.add_argument("--force", action="store_true", help="Re-scrape metadata & excerpts for already-scraped months")
     scrape.add_argument("--max-404", type=int, default=MAX_CONSECUTIVE_404,
                         metavar="N", help=f"Stop after N consecutive 404s (default: {MAX_CONSECUTIVE_404})")
     scrape.add_argument("--dry-run", action="store_true", help="Validate only, no save")
+    scrape.add_argument("--archive", action="store_true",
+                        help="Force old /archive/YYYY/MM/ URL format (pre-2010)")
+    scrape.add_argument("--arhiv", action="store_true",
+                        help="Force new /arhiv/YYYY/M.shtml URL format (2010+)")
 
     info = parser.add_argument_group("Information options")
     info.add_argument("--db-summary", action="store_true", help="Show database summary")
@@ -655,6 +857,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout:
         request_cfg.timeout = args.timeout
     rate_limiter = AdaptiveRateLimiter(request_cfg)
+    with_excerpt = not args.no_excerpt
+    force = args.force
+    force_format = "archive" if args.archive else ("arhiv" if args.arhiv else "")
 
     # --- Info commands ---
     if args.db_schema:
@@ -735,23 +940,23 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             logger.info("Fetching excerpts for %04d-%02d (%d articles) ...", y, m, len(articles_to_fetch))
 
-            def fetch_excerpt_worker(article_row, cfg, rl):
-                url = article_row["detail_url"]
-                html = fetch_html(url, cfg, rl)
-                excerpt = parse_excerpt_page(html)
-                pdf_url = extract_pdf_url(html)
-                return {"topic": article_row["topic"], "excerpt": excerpt, "pdf_url": pdf_url}
+            worker = _make_excerpt_worker(y, m)
+            results = fetch_all_parallel(articles_to_fetch, worker, request_cfg)
 
-            results = fetch_all_parallel(articles_to_fetch, fetch_excerpt_worker, request_cfg)
+            batch_items = []
             for item, result, error in results:
                 if error:
                     logger.warning("Failed excerpt for %s: %s", item["topic"], error)
                     continue
                 if result.get("excerpt"):
-                    db.update_excerpt(result["topic"], y, m, result["excerpt"])
-                    total_excerpts += 1
+                    batch_items.append((result["excerpt"], result["topic"], y, m))
                 if result.get("pdf_url"):
                     db.update_pdf_url(result["topic"], y, m, result["pdf_url"])
+
+            if batch_items:
+                db.update_excerpts_batch(batch_items)
+                total_excerpts += len(batch_items)
+
         db.finish_session(session_id, "completed")
         print(f"\nDone. Fetched {total_excerpts} missing excerpts across {len(rows)} months.")
         show_summary(db)
@@ -766,8 +971,9 @@ def main(argv: list[str] | None = None) -> int:
             result = scrape_month(
                 db, args.year, args.month, session_id,
                 request_cfg, rate_limiter,
-                with_excerpt=args.with_excerpt,
                 dry_run=args.dry_run,
+                force=force,
+                force_format=force_format,
             )
             if args.dry_run:
                 print(f"\nDry run: {result} articles found on {args.year}-{args.month:02d}")
@@ -775,6 +981,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 db.finish_session(session_id, "completed",
                                   total_months=1, total_found=max(0, result))
+                if with_excerpt and result > 0:
+                    _fetch_single_month_excerpts(db, args.year, args.month, request_cfg, dry_run=args.dry_run)
                 show_summary(db)
             return 0 if result != -1 else 1
 
@@ -786,12 +994,13 @@ def main(argv: list[str] | None = None) -> int:
             months_done = 0
             y, m = since_year, since_month
             while (y > until_year) or (y == until_year and m >= until_month):
-                if not db.is_month_scraped(y, m):
+                if force or not db.is_month_scraped(y, m):
                     result = scrape_month(
                         db, y, m, session_id,
                         request_cfg, rate_limiter,
-                        with_excerpt=args.with_excerpt,
                         dry_run=args.dry_run,
+                        force=force,
+                        force_format=force_format,
                     )
                     if result > 0:
                         total_found += result
@@ -808,24 +1017,29 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 db.finish_session(session_id, "completed",
                                   total_months=months_done, total_found=total_found)
+                if with_excerpt and total_found > 0:
+                    fetch_missing_excerpts(db, session_id, request_cfg, dry_run=args.dry_run)
                 show_summary(db)
             return 0
 
-        # Default: auto-scan
+        # Default: auto-scan (parallel)
         now = datetime.now(timezone.utc)
         start_year = args.year or now.year
         start_month = args.month or now.month
 
-        total = auto_scan(
+        total = auto_scan_parallel(
             db, session_id, request_cfg, rate_limiter,
             start_year, start_month,
             max_404=args.max_404,
-            with_excerpt=args.with_excerpt,
             dry_run=args.dry_run,
+            force=force,
+            force_format=force_format,
         )
         if args.dry_run:
             return 0
         db.finish_session(session_id, "completed", total_found=total)
+        if with_excerpt and total > 0:
+            fetch_missing_excerpts(db, session_id, request_cfg, dry_run=args.dry_run)
         show_summary(db)
         return 0
 

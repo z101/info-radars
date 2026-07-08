@@ -85,3 +85,85 @@ def sample_empty_content() -> str:
 @pytest.fixture
 def db_path(tmp_path) -> str:
     return str(tmp_path / "test_radio.db")
+
+
+@pytest.fixture
+def sample_archive_toc_1994() -> str:
+    return """<html>
+<head><meta http-equiv="CONTENT-TYPE" content="text/html; charset=koi8-r">
+<title>Журнал "Радио" | Содержание | Январь 1994</title></head>
+<body>
+<h4>Содержание номера</h4>
+<table border=0 cellspacing=0 cellpadding=0 width="100%">
+<tr><td width="93%"><b>А. Петров.</b> Новая схема</td><td width="7%">5</td></tr>
+<tr><td colspan="2" align=center><b>Радиоприем</b></td></tr>
+<tr><td width="93%"><b>И. Иванов.</b> Усилитель для приемника</td><td width="7%">12</td></tr>
+<tr><td width="93%"><b>В. Сидоров.</b> Простой детектор</td><td width="7%">15</td></tr>
+</table>
+</body></html>"""
+
+
+@pytest.fixture
+def sample_archive_annot_2002() -> str:
+    return """<html>
+<head><meta http-equiv="CONTENT-TYPE" content="text/html; charset=koi8-r">
+<title>Журнал "Радио" | Содержание | Январь 2002</title>
+<script>
+function opendescription(id){
+window.open ('http://www.radio.ru/archive/2002/01/a' + id + '.shtml', 'Description', 'height=300, width=250, resizable=1, scrollbars=yes, menubar=no, status=no');
+}
+</script>
+</head>
+<body>
+<h4>Содержание номера</h4>
+<table border=0 cellspacing=0 cellpadding=0 width="100%">
+<tr><td width="93%">Поздравляем2001 <a href="javascript:opendescription(1);"><img src="/images/d.gif" width=15 height=15 border=0></a></td><td width="7%">4</td></tr>
+<tr><td colspan="2" align=center><b>Радиоприем</b></td></tr>
+<tr><td width="93%"><b>А. Петров.</b> Новый приемник <a href="javascript:opendescription(2);"><img src="/images/d.gif" width=15 height=15 border=0></a></td><td width="7%">6</td></tr>
+<tr><td width="93%"><b>И. Сидоров.</b> Усилитель для УКВ <a href="javascript:opendescription(3);"><img src="/images/d.gif" width=15 height=15 border=0></a></td><td width="7%">8</td></tr>
+</table>
+</body></html>"""
+
+
+@pytest.fixture
+def sample_archive_djvu_2005() -> str:
+    return """<html>
+<head><meta http-equiv="CONTENT-TYPE" content="text/html; charset=koi8-r">
+<title>Журнал "Радио" | Содержание | Январь 2005</title>
+<script>
+function opendescription(id){
+window.open ('http://www.radio.ru/archive/2005/01/a' + id + '.shtml', 'Description', 'height=640, width=480, resizable=1, scrollbars=yes, menubar=yes, status=no');
+}
+</script>
+</head>
+<body>
+<h4>Содержание номера</h4>
+<table border=0 cellspacing=0 cellpadding=0 width="100%">
+<tr><td width="93%">С Новым годом! <a href="javascript:opendescription(1);"><img src="/images/d1.gif" width=15 height=15 border=0></a></td><td width="7%">4</td></tr>
+<tr><td colspan="2" align=center><b>Наука и техника</b></td></tr>
+<tr><td width="93%"><b>А. Голышко.</b> Тенденции в технологиях <a href="javascript:opendescription(2);"><img src="/images/d1.gif" width=15 height=15 border=0></a></td><td width="7%">8</td></tr>
+<tr><td width="93%"><b>И. Иванов.</b> Обзор телевизоров <a href="javascript:opendescription(3);"><img src="/images/d.gif" width=15 height=15 border=0></a></td><td width="7%">10</td></tr>
+</table>
+</body></html>"""
+
+
+@pytest.fixture
+def sample_archive_pdf_2009() -> str:
+    return """<html>
+<head><meta http-equiv="CONTENT-TYPE" content="text/html; charset=koi8-r">
+<title>Журнал "Радио" | Содержание | Декабрь 2009</title>
+<script>
+function opendescription(id){
+window.open ('http://www.radio.ru/archive/2009/12/a' + id + '.shtml', 'Description', 'height=640, width=480, resizable=1, scrollbars=yes, menubar=yes, status=no');
+}
+</script>
+</head>
+<body>
+<h4>Содержание номера</h4>
+<table border=0 cellspacing=0 cellpadding=0 width="100%">
+<tr><td width="93%">К 150-летию А. С. Попова <a href="javascript:opendescription(1);"><img src="/images/d1.gif" width=15 height=15 border=0></a></td><td width="7%">4</td></tr>
+<tr><td colspan="2" align=center><b>Радиоприем</b></td></tr>
+<tr><td width="93%"><b>В. Поляков.</b> Радиовещание на УКВ <a href="javascript:opendescription(2);"><img src="/images/d1.gif" width=15 height=15 border=0></a></td><td width="7%">8</td></tr>
+<tr><td width="93%"><b>И. Нечаев.</b> Источник питания <a href="javascript:opendescription(3);"><img src="/images/d.gif" width=15 height=15 border=0></a></td><td width="7%">16</td></tr>
+</table>
+</body></html>"""

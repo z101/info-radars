@@ -9,31 +9,31 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 logger = logging.getLogger(__name__)
 
 BASE_COLUMNS = [
-    "id", "is_interesting", "is_read", "section", "author",
-    "date", "topic", "page", "url", "excerpt",
+    "id", "is_interesting", "is_read", "date", "url",
+    "pdf_url", "page", "section", "author", "excerpt", "topic",
 ]
 
 BASE_HEADER_NAMES = {
     "id": "id", "is_interesting": "I", "is_read": "R",
-    "section": "Section", "author": "Author",
-    "date": "Date", "topic": "Topic", "page": "Page",
-    "url": "URL", "excerpt": "Excerpt",
+    "date": "Date", "url": "URL", "pdf_url": "PDF",
+    "page": "Page", "section": "Section", "author": "Author",
+    "excerpt": "Excerpt", "topic": "Topic",
 }
 
 BASE_EDITABLE = {"is_interesting", "is_read"}
 
 SEARCH_COLUMNS = [
-    "id", "score", "is_interesting", "is_read", "section", "author",
-    "date", "topic", "page", "url", "excerpt",
+    "id", "is_interesting", "is_read", "score", "date", "url",
+    "pdf_url", "page", "section", "author", "excerpt", "topic",
     "topical_relevance", "technical_depth",
     "practical_applicability", "novelty", "historical_value",
 ]
 
 SEARCH_HEADER_NAMES = {
-    "id": "id", "score": "Score", "is_interesting": "I", "is_read": "R",
-    "section": "Section", "author": "Author",
-    "date": "Date", "topic": "Topic", "page": "Page",
-    "url": "URL", "excerpt": "Excerpt",
+    "id": "id", "is_interesting": "I", "is_read": "R",
+    "score": "Score", "date": "Date", "url": "URL",
+    "pdf_url": "PDF", "page": "Page", "section": "Section",
+    "author": "Author", "excerpt": "Excerpt", "topic": "Topic",
     "topical_relevance": "Topical Relevance",
     "technical_depth": "Technical Depth",
     "practical_applicability": "Practical Applicability",
@@ -84,7 +84,7 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
             val = article.get(col_name, "")
             if col_name in ("is_interesting", "is_read"):
                 val = "Y" if val else ""
-            elif col_name == "url" and val:
+            elif col_name in ("url", "pdf_url") and val:
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell.value = f'=HYPERLINK("{val}", "{val}")'
                 cell.border = THIN_BORDER
@@ -98,15 +98,17 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
             if col_name in editable:
                 cell.fill = EDITABLE_FILL
                 cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif col_name == "excerpt":
+            elif col_name in ("excerpt", "topic"):
                 cell.alignment = Alignment(
                     horizontal="left", vertical="top", wrap_text=True
                 )
 
     col_widths = {
-        "id": 7, "score": 6, "is_interesting": 3, "is_read": 3,
-        "section": 18, "author": 18, "date": 10, "topic": 60,
-        "page": 5, "url": 5, "excerpt": 90,
+        "id": 5, "is_interesting": 3, "is_read": 3,
+        "date": 8, "url": 5, "pdf_url": 5, "page": 5,
+        "section": 15, "author": 15,
+        "excerpt": 50, "topic": 50,
+        "score": 6,
         "topical_relevance": 12, "technical_depth": 12,
         "practical_applicability": 14, "novelty": 8, "historical_value": 10,
     }

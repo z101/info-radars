@@ -47,14 +47,20 @@ free-text request into the correct CLI invocation, run it, report results.
 ### How auto-scan works
 
 `--auto-scan` (default mode) starts from **current month** and walks backwards through months,
-decrementing year/month. For each month it fetches `http://www.radio.ru/arhiv/YYYY/M.shtml`.
+decrementing year/month. It automatically switches between two URL formats:
 
-- **200 with content** → parses and saves articles, resets 404 counter
+| Years | URL format | Encoding | Content |
+|-------|-----------|----------|---------|
+| 1994–2001 | `/archive/YYYY/MM/` | KOI8-R | Only table of contents (no links) |
+| 2002–2004 | `/archive/YYYY/MM/` | KOI8-R | Annotations (`d.gif`) |
+| 2005–2008 | `/archive/YYYY/MM/` | KOI8-R | Annotations + DjVu (`d1.gif`) |
+| 2009–2012 | `/archive/YYYY/MM/` | KOI8-R | Annotations + PDF (`d1.gif`) |
+| 2010–2026 | `/arhiv/YYYY/M.shtml` | UTF-8 | Annotations + PDF (`d1.gif`) |
+
+- **200 with content** → parses and saves articles
 - **404** → increments consecutive_404 counter
-- After **10 consecutive 404s** → stops (archive end reached)
-
-This naturally handles the site's publication delay (e.g., current month may return 404
-for several months before reaching available content).
+- After **10 consecutive 404s** → stops (end reached, newer months not yet published)
+- **Empty TOC pages (1994–2001)** → tracked via separate counter; stops after **25 consecutive** empty months (end of digital archive)
 
 ### Commands
 
@@ -65,15 +71,19 @@ for several months before reaching available content).
 # Auto-scan with article annotations (slower, fetches descriptions)
 ..\..\..\.venv\Scripts\python src\main.py --with-excerpt
 
-# Single month
+# Single month (auto-detects format by year)
 ..\..\..\.venv\Scripts\python src\main.py --year 2026 --month 4
-..\..\..\.venv\Scripts\python src\main.py --year 2025 --month 10
+..\..\..\.venv\Scripts\python src\main.py --year 2005 --month 1
 
-# Range (newest to oldest)
-..\..\..\.venv\Scripts\python src\main.py --since 2025-01 --until 2026-04
+# Range (newest to oldest, auto-detects format)
+..\..\..\.venv\Scripts\python src\main.py --since 2005-01 --until 2026-04
+
+# Force a specific URL format
+..\..\..\.venv\Scripts\python src\main.py --year 2010 --month 1 --archive  # Force /archive/2010/01/
+..\..\..\.venv\Scripts\python src\main.py --year 2009 --month 12 --arhiv  # Force /arhiv/2009/12.shtml
 
 # Dry run (validate without saving)
-..\..\..\.venv\Scripts\python src\main.py --year 2026 --month 4 --dry-run
+..\..\..\.venv\Scripts\python src\main.py --year 2005 --month 1 --dry-run
 
 # Custom 404 threshold
 ..\..\..\.venv\Scripts\python src\main.py --max-404 5
@@ -252,30 +262,50 @@ Columns **I** and **R** are editable (yellow background) — mark them Y to set 
 
 ### Database: `data/radio.db`
 
-- **`articles`**: year, month, section, topic, author, page, excerpt, detail_url, pdf_url, is_interesting, is_read, content_hash
+- **`articles`**: year, month, section, topic, author, page, excerpt, detail_url, pdf_url, is_interesting, is_read, content_hash, format_type, has_d1
 - **`search_scores`**: article_id, query_hash, rubric_hash, content_hash, status, passed_filter, scores_json, total, comment
 - **`scraped_months`**: tracks which (year, month) pairs are scraped, with consecutive_404 counter
 - **`scrape_sessions`**: logging of each scrape run
 
+`format_type` values: `new` (2010+), `old_pdf` (2009), `old_djvu` (2005–2008), `old_annotation` (2002–2004), `old_toc` (1994–2001).
+`has_d1` indicates the article has a downloadable PDF/DjVu file (`d1.gif` icon).
+
 ### URL format
 
+Two formats are supported, auto-selected by year:
+
 ```
+# New format (2010+, UTF-8)
 http://www.radio.ru/arhiv/{year}/{month}.shtml
+No leading zero for months 1-9 (e.g., /2026/4.shtml, /2025/10.shtml)
+
+# Old format (1994–2012, KOI8-R)
+http://www.radio.ru/archive/{year}/{month:02d}/
+Leading zero for months 1-9 (e.g., /archive/2005/01/, /archive/1995/12/)
 ```
 
-No leading zero for months 1-9 (e.g., `/2026/4.shtml`, `/2025/10.shtml`).
+Overlap years 2010–2012 work in both formats.
 
 ### Parser
 
-Parses `<table class="t_sod">` structure:
-- Section rows: `colspan=2`, centered `<b>` text
-- Article rows: `<td>` with `<b>Author.</b> Topic <a><img></a>`, second `<td>` contains page number
+**New format (2010+):** Parses `<table class="t_sod">` structure with direct hash URLs:
+- `d.gif` → annotation page
+- `d1.gif` → PDF download
+
+**Old format (1994–2012):** Parses plain `<table>` with `javascript:opendescription(N)` links:
+- `d.gif` → `/archive/YYYY/MM/aN.shtml` (annotation)
+- `d1.gif` → DjVu (2005–2008) or PDF (2009+)
+- No icons (1994–2001) → TOC only, no detail URLs
 
 ### Annotation fetching
 
-Optional `--with-excerpt` fetches each article's detail page via `d.gif`/`d1.gif` links,
-extracts the annotation text (second paragraph under "Аннотация статьи",
-skipping the repeated author/title).
+Optional `--with-excerpt` fetches each article's detail page via `d.gif`/`d1.gif` links.
+Two parsers are used depending on format:
+
+- **New format** (`/arhiv/`): extracts second paragraph under "Аннотация статьи"
+- **Old format** (`/archive/`): extracts non-metadata paragraphs from `/archive/YYYY/MM/aN.shtml`
+
+The `--archive` flag forces old format URL construction; `--arhiv` forces new format.
 
 ### Search pipeline
 

@@ -36,13 +36,14 @@ def generate_report(
             "score": r["total"],
             "is_interesting": r["is_interesting"],
             "is_read": r["is_read"],
-            "author": r["author"] or "",
             "date": f"{r['year']:04d}-{r['month']:02d}",
             "url": r["detail_url"] or "",
-            "section": r["section"] or "",
-            "topic": r["topic"],
+            "pdf_url": r.get("pdf_url") or "",
             "page": r["page"] or "",
+            "section": r["section"] or "",
+            "author": r["author"] or "",
             "excerpt": r["excerpt"] or "",
+            "topic": r["topic"],
         }
         for k in criteria_keys:
             row[k] = r["scores"].get(k, 0)
