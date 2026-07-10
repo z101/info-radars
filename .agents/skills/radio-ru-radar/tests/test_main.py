@@ -1,6 +1,7 @@
 import pytest
 from scraper.database import Database
-from analyzer.hashes import compute_query_hash, compute_rubric_hash
+from analyzer.hashes import compute_query_hash, compute_rubric_hash, compute_content_hash
+from analyzer.normalizer import normalize_scores
 
 
 def _seed_article(db, sid, year=2026, month=4, topic="Test Article", author="И. Автор", excerpt=""):
@@ -69,6 +70,18 @@ class TestDatabase:
         db.update_excerpt("Test topic", 2026, 4, "This is an excerpt")
         articles = db.get_latest_articles(10)
         assert articles[0]["excerpt"] == "This is an excerpt"
+
+    def test_content_hash_sync_on_excerpt_update(self, db_path):
+        db = Database(db_path)
+        sid = db.create_session()
+        aid = _seed_article(db, sid, topic="HashTest", author="A. Author")
+        row = db._fetchone("SELECT content_hash FROM articles WHERE id = ?", (aid,))
+        initial_hash = row["content_hash"]
+        db.update_excerpt("HashTest", 2026, 4, "Some excerpt text")
+        row = db._fetchone("SELECT content_hash, excerpt, topic, author FROM articles WHERE id = ?", (aid,))
+        expected = compute_content_hash("Some excerpt text", "HashTest", "A. Author")
+        assert row["content_hash"] == expected
+        assert row["content_hash"] != initial_hash
 
     def test_search_articles(self, db_path):
         db = Database(db_path)
@@ -161,42 +174,62 @@ class TestInterestingRead:
 
 
 class TestSearchPipeline:
-    def test_filter_candidates_all_uncached(self, db_path):
+    def test_candidates_all_uncached(self, db_path):
         db = Database(db_path)
         sid = db.create_session()
         _seed_article(db, sid, topic="A1")
         _seed_article(db, sid, topic="A2")
         qh = compute_query_hash("test query")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
+        rh = compute_rubric_hash({})
+        cands = db.get_search_candidates(qh, rh)
         assert len(cands) == 2
 
-    def test_processed_article_excluded_from_filter(self, db_path):
+    def test_scored_article_excluded_from_candidates(self, db_path):
         db = Database(db_path)
         sid = db.create_session()
         aid = _seed_article(db, sid)
         qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
+        rh = compute_rubric_hash({})
+        cands = db.get_search_candidates(qh, rh)
         art = cands[0]
-        db.save_search_filter(art["id"], qh, "q", "q", rh, art["content_hash"], True, "keep")
-        remaining = db.get_search_candidates(qh, rh, "filter")
+        db.save_search_result(art["id"], qh, rh, art["content_hash"], 85, "good")
+        remaining = db.get_search_candidates(qh, rh)
         assert len(remaining) == 0
 
-    def test_save_filter_and_save_score(self, db_path):
+    def test_save_result_and_report(self, db_path):
         db = Database(db_path)
         sid = db.create_session()
         aid = _seed_article(db, sid)
         qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
+        rh = compute_rubric_hash({})
+        cands = db.get_search_candidates(qh, rh)
         art = cands[0]
-        db.save_search_filter(art["id"], qh, "q", "q", rh, art["content_hash"], True, "ok")
-        db.save_search_score(art["id"], qh, rh, {"x": 8}, 8, "good")
+        db.save_search_result(art["id"], qh, rh, art["content_hash"], 85, "nice article")
         report = db.get_search_report(qh, rh)
         assert len(report) == 1
-        assert report[0]["total"] == 8
-        assert report[0]["comment"] == "good"
+        assert report[0]["total"] == 85
+        assert report[0]["comment"] == "nice article"
+
+    def test_save_result_with_content_hash_disambiguates(self, db_path):
+        db = Database(db_path)
+        sid = db.create_session()
+        aid = _seed_article(db, sid, topic="A1", excerpt="v1")
+        qh = compute_query_hash("q")
+        rh = compute_rubric_hash({})
+
+        db.save_search_result(aid, qh, rh, compute_content_hash("v1", "A1", "И. Автор"), 80, "first")
+
+        db.update_excerpt("A1", 2026, 4, "v2")
+        ch2 = compute_content_hash("v2", "A1", "И. Автор")
+        db.save_search_result(aid, qh, rh, ch2, 90, "second")
+
+        rows = db._fetchall(
+            "SELECT total, comment FROM search_scores WHERE article_id=? ORDER BY total",
+            (aid,),
+        )
+        assert len(rows) == 2
+        totals = sorted(r["total"] for r in rows)
+        assert totals == [80, 90]
 
     def test_candidates_batch(self, db_path):
         db = Database(db_path)
@@ -205,55 +238,48 @@ class TestSearchPipeline:
         _seed_article(db, sid, topic="A2")
         _seed_article(db, sid, topic="A3")
         qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        batch0 = db.get_search_candidates_batch(qh, rh, "filter", 0, 2)
+        rh = compute_rubric_hash({})
+        batch0 = db.get_search_candidates_batch(qh, rh, 0, 2)
         assert len(batch0) == 2
-        batch1 = db.get_search_candidates_batch(qh, rh, "filter", 1, 2)
+        batch1 = db.get_search_candidates_batch(qh, rh, 1, 2)
         assert len(batch1) == 1
-
-    def test_kept_articles_go_to_rerank(self, db_path):
-        db = Database(db_path)
-        sid = db.create_session()
-        aid = _seed_article(db, sid)
-        qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
-        art = cands[0]
-        db.save_search_filter(art["id"], qh, "q", "q", rh, art["content_hash"], True, "keep")
-        rerank = db.get_search_candidates(qh, rh, "rerank")
-        assert len(rerank) == 1
-
-    def test_dropped_articles_not_in_rerank(self, db_path):
-        db = Database(db_path)
-        sid = db.create_session()
-        _seed_article(db, sid)
-        qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
-        art = cands[0]
-        db.save_search_filter(art["id"], qh, "q", "q", rh, art["content_hash"], False, "drop")
-        rerank = db.get_search_candidates(qh, rh, "rerank")
-        assert len(rerank) == 0
 
     def test_mark_search_error(self, db_path):
         db = Database(db_path)
         sid = db.create_session()
         aid = _seed_article(db, sid)
         qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
-        cands = db.get_search_candidates(qh, rh, "filter")
+        rh = compute_rubric_hash({})
+        cands = db.get_search_candidates(qh, rh)
         art = cands[0]
-        db.mark_search_error(art["id"], qh, rh, art["content_hash"], "filter", "timeout", "q", "q")
+        db.mark_search_error(art["id"], qh, rh, art["content_hash"], "timeout")
         row = db._fetchone("SELECT status, attempts FROM search_scores WHERE article_id=?", (aid,))
         assert row["status"] == "error"
         assert row["attempts"] == 1
+
+    def test_error_article_retried(self, db_path):
+        db = Database(db_path)
+        sid = db.create_session()
+        aid = _seed_article(db, sid)
+        qh = compute_query_hash("q")
+        rh = compute_rubric_hash({})
+        ch = compute_content_hash("", "Test Article", "\u0418. \u0410\u0432\u0442\u043e\u0440")
+        db.mark_search_error(aid, qh, rh, ch, "timeout")
+        cands = db.get_search_candidates(qh, rh, max_retries=3)
+        assert len(cands) == 1
+        db.mark_search_error(aid, qh, rh, ch, "timeout again")
+        cands = db.get_search_candidates(qh, rh, max_retries=3)
+        assert len(cands) == 1
+        db.mark_search_error(aid, qh, rh, ch, "timeout again3")
+        cands = db.get_search_candidates(qh, rh, max_retries=3)
+        assert len(cands) == 0
 
     def test_get_search_status(self, db_path):
         db = Database(db_path)
         sid = db.create_session()
         _seed_article(db, sid)
         qh = compute_query_hash("q")
-        rh = compute_rubric_hash({"x": {"weight": 10}})
+        rh = compute_rubric_hash({})
         status = db.get_search_status(qh, rh)
         assert status["total_articles"] == 1
         assert status["by_status"] == {}
@@ -266,10 +292,50 @@ class TestSearchPipeline:
         assert "content_hash" in cols
 
 
+class TestNormalizer:
+    def test_normalize_scores_basic(self):
+        results = [
+            {"total": 10},
+            {"total": 50},
+            {"total": 100},
+        ]
+        normalize_scores(results, key="total")
+        assert results[0]["total_normalized"] == 0.0
+        assert results[1]["total_normalized"] == pytest.approx(44.4, rel=0.1)
+        assert results[2]["total_normalized"] == 100.0
+
+    def test_normalize_preserves_ordering(self):
+        results = [
+            {"total": 20},
+            {"total": 80},
+            {"total": 35},
+        ]
+        normalize_scores(results, key="total")
+        assert results[0]["total_normalized"] < results[1]["total_normalized"]
+        assert results[2]["total_normalized"] < results[1]["total_normalized"]
+
+    def test_normalize_all_equal(self):
+        results = [
+            {"total": 50},
+            {"total": 50},
+            {"total": 50},
+        ]
+        normalize_scores(results, key="total")
+        for r in results:
+            assert r["total_normalized"] == 100.0
+
+    def test_normalize_single_element(self):
+        results = [{"total": 42}]
+        normalize_scores(results, key="total")
+        assert results[0]["total_normalized"] == 100.0
+
+    def test_normalize_empty_list(self):
+        assert normalize_scores([], key="total") == []
+
+
 class TestHasher:
     def test_query_hash_stable(self):
         assert compute_query_hash("test query") == compute_query_hash("test  query")
 
     def test_rubric_hash_stable(self):
-        cfg = {"a": {"weight": 10}, "b": {"weight": 20}}
-        assert compute_rubric_hash(cfg) == compute_rubric_hash({"b": {"weight": 20}, "a": {"weight": 10}})
+        assert compute_rubric_hash({}) == compute_rubric_hash({})

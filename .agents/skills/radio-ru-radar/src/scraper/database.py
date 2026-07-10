@@ -537,178 +537,88 @@ class Database:
         return result
 
     # ------------------------------------------------------------------
-    # Search pipeline
+    # Search pipeline (single-stage scoring)
     # ------------------------------------------------------------------
     def get_search_candidates(
         self,
         query_hash: str,
         rubric_hash: str,
-        stage: str,
         max_retries: int = 3,
     ) -> list[dict]:
-        if stage == "filter":
-            rows = self._fetchall(
-                """
-                SELECT a.id, a.topic, a.author, a.section, a.page, a.year, a.month,
-                       a.excerpt, a.content_hash, a.detail_url
-                FROM articles a
-                WHERE (
-                    NOT EXISTS (
-                        SELECT 1 FROM search_scores s
-                        WHERE s.article_id = a.id
-                          AND s.query_hash = ?
-                          AND s.rubric_hash = ?
-                          AND s.content_hash = a.content_hash
-                    )
-                    OR EXISTS (
-                        SELECT 1 FROM search_scores s
-                        WHERE s.article_id = a.id
-                          AND s.query_hash = ?
-                          AND s.rubric_hash = ?
-                          AND s.content_hash = a.content_hash
-                          AND s.status = 'error'
-                          AND s.passed_filter IS NULL
-                          AND s.attempts < ?
-                    )
-                )
-                ORDER BY a.year DESC, a.month DESC, a.id DESC
-                """,
-                (query_hash, rubric_hash, query_hash, rubric_hash, max_retries),
-            )
-            result = []
-            for r in rows:
-                result.append({
-                    "id": r["id"],
-                    "topic": r["topic"],
-                    "author": r["author"] or "",
-                    "section": r["section"] or "",
-                    "page": r["page"] or "",
-                    "year": r["year"],
-                    "month": r["month"],
-                    "excerpt": r["excerpt"] or "",
-                    "detail_url": r["detail_url"] or "",
-                    "content_hash": r["content_hash"],
-                    "has_excerpt": bool(r["excerpt"]),
-                })
-            return result
-
-        elif stage == "rerank":
-            rows = self._fetchall(
-                """
-                SELECT a.id, a.topic, a.author, a.section, a.page, a.year, a.month,
-                       a.excerpt, a.detail_url,
-                       s.content_hash, s.filter_reason
-                FROM search_scores s
-                JOIN articles a ON a.id = s.article_id
-                WHERE s.query_hash = ?
+        rows = self._fetchall(
+            """
+            SELECT a.id, a.topic, a.author, a.section, a.page, a.year, a.month,
+                   a.excerpt, a.content_hash, a.detail_url
+            FROM articles a
+            WHERE NOT EXISTS (
+                SELECT 1 FROM search_scores s
+                WHERE s.article_id = a.id
+                  AND s.query_hash = ?
                   AND s.rubric_hash = ?
                   AND s.content_hash = a.content_hash
-                  AND (
-                    (s.status = 'kept' AND s.total IS NULL)
-                    OR (s.status = 'error' AND s.attempts < ? AND s.passed_filter = 1)
-                  )
-                ORDER BY a.year DESC, a.month DESC, a.id DESC
-                """,
-                (query_hash, rubric_hash, max_retries),
+                  AND (s.status = 'scored' OR (s.status = 'error' AND s.attempts >= ?))
             )
-            result = []
-            for r in rows:
-                result.append({
-                    "id": r["id"],
-                    "topic": r["topic"],
-                    "author": r["author"] or "",
-                    "section": r["section"] or "",
-                    "page": r["page"] or "",
-                    "year": r["year"],
-                    "month": r["month"],
-                    "excerpt": r["excerpt"] or "",
-                    "detail_url": r["detail_url"] or "",
-                    "content_hash": r["content_hash"],
-                    "filter_reason": r["filter_reason"],
-                })
-            return result
-
-        else:
-            raise ValueError(f"Unknown stage: {stage!r}. Expected 'filter' or 'rerank'.")
+            ORDER BY a.year DESC, a.month DESC, a.id DESC
+            """,
+            (query_hash, rubric_hash, max_retries),
+        )
+        result = []
+        for r in rows:
+            result.append({
+                "id": r["id"],
+                "topic": r["topic"],
+                "author": r["author"] or "",
+                "section": r["section"] or "",
+                "page": r["page"] or "",
+                "year": r["year"],
+                "month": r["month"],
+                "excerpt": r["excerpt"] or "",
+                "detail_url": r["detail_url"] or "",
+                "content_hash": r["content_hash"],
+                "has_excerpt": bool(r["excerpt"]),
+            })
+        return result
 
     def get_search_candidates_batch(
         self,
         query_hash: str,
         rubric_hash: str,
-        stage: str,
         batch: int,
         batch_size: int,
         max_retries: int = 3,
     ) -> list[dict]:
-        all_candidates = self.get_search_candidates(query_hash, rubric_hash, stage, max_retries)
+        all_candidates = self.get_search_candidates(query_hash, rubric_hash, max_retries)
         start = batch * batch_size
         return all_candidates[start:start + batch_size]
 
-    def save_search_filter(
+    def save_search_result(
         self,
         article_id: int,
         query_hash: str,
-        query_name: str,
-        query_text: str,
         rubric_hash: str,
         content_hash: str,
-        keep: bool,
-        reason: str,
-    ):
+        relevance: int,
+        comment: str,
+    ) -> bool:
         now = datetime.now(timezone.utc).isoformat()
-        status = "kept" if keep else "dropped"
+        scores_json = json.dumps({"relevance": relevance}, ensure_ascii=False)
         self._execute(
             """
             INSERT INTO search_scores
                 (article_id, query_hash, query_name, query_text, rubric_hash,
-                 content_hash, status, passed_filter, filter_reason, filtered_at, attempts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                 content_hash, status, scores_json, total, comment, scored_at, attempts)
+            VALUES (?, ?, '', '', ?, ?, 'scored', ?, ?, ?, ?, 0)
             ON CONFLICT(article_id, query_hash, rubric_hash, content_hash) DO UPDATE SET
-                status        = excluded.status,
-                passed_filter = excluded.passed_filter,
-                filter_reason = excluded.filter_reason,
-                filtered_at   = excluded.filtered_at,
-                last_error    = NULL
+                status      = 'scored',
+                scores_json = excluded.scores_json,
+                total       = excluded.total,
+                comment     = excluded.comment,
+                scored_at   = excluded.scored_at,
+                last_error  = NULL,
+                attempts    = 0
             """,
-            (article_id, query_hash, query_name, query_text, rubric_hash,
-             content_hash, status, 1 if keep else 0, reason, now),
-        )
-
-    def save_search_score(
-        self,
-        article_id: int,
-        query_hash: str,
-        rubric_hash: str,
-        scores: dict,
-        total: int,
-        comment: str,
-    ) -> bool:
-        now = datetime.now(timezone.utc).isoformat()
-        scores_json = json.dumps(scores, ensure_ascii=False)
-        active = self._fetchone(
-            "SELECT id FROM search_scores "
-            "WHERE article_id = ? AND query_hash = ? AND rubric_hash = ? "
-            "  AND total IS NULL AND status IN ('kept', 'error') "
-            "ORDER BY id DESC LIMIT 1",
-            (article_id, query_hash, rubric_hash),
-        )
-        if not active:
-            logger.warning(
-                "save_search_score: no active row for article_id=%s (skipped)", article_id
-            )
-            return False
-        self._execute(
-            """
-            UPDATE search_scores
-            SET status      = 'scored',
-                scores_json = ?,
-                total       = ?,
-                comment     = ?,
-                scored_at   = ?,
-                last_error  = NULL
-            WHERE id = ?
-            """,
-            (scores_json, total, comment, now, active["id"]),
+            (article_id, query_hash, rubric_hash, content_hash,
+             scores_json, relevance, comment, now),
         )
         return True
 
@@ -718,7 +628,6 @@ class Database:
         query_hash: str,
         rubric_hash: str,
         content_hash: str,
-        stage: str,
         error: str,
         query_name: str = "",
         query_text: str = "",
@@ -752,12 +661,12 @@ class Database:
         query_hash: str,
         rubric_hash: str,
         min_total: int = 0,
-        top: Optional[int] = None,
+        top: int | None = None,
     ) -> list[dict]:
         query = (
             "SELECT a.id, a.topic, a.author, a.section, a.page, a.year, a.month, "
             "  a.detail_url, a.pdf_url, a.excerpt, a.is_interesting, a.is_read, "
-            "  s.scores_json, s.total, s.comment, s.filter_reason, s.status "
+            "  s.total, s.comment, s.scores_json "
             "FROM search_scores s "
             "JOIN articles a ON a.id = s.article_id "
             "WHERE s.query_hash = ? AND s.rubric_hash = ? "
@@ -771,7 +680,6 @@ class Database:
         rows = self._fetchall(query, params)
         result = []
         for r in rows:
-            scores = json.loads(r["scores_json"]) if r["scores_json"] else {}
             result.append({
                 "id": r["id"],
                 "topic": r["topic"],
@@ -785,10 +693,8 @@ class Database:
                 "excerpt": r["excerpt"] or "",
                 "is_interesting": bool(r["is_interesting"]),
                 "is_read": bool(r["is_read"]),
-                "scores": scores,
                 "total": r["total"],
                 "comment": r["comment"] or "",
-                "filter_reason": r["filter_reason"],
             })
         return result
 

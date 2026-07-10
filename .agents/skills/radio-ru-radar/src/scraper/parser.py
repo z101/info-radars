@@ -130,7 +130,7 @@ def _extract_article(tr: Tag) -> dict:
             else:
                 topic = after_b_str
             topic = BeautifulSoup(topic, "lxml").get_text(strip=True)
-            topic = topic.rstrip(".,; \t&nbsp;")
+            topic = topic.lstrip(".,;: \t&nbsp;").rstrip(".,; \t&nbsp;")
 
     page = second_td.get_text(strip=True)
 
@@ -205,7 +205,7 @@ def parse_content_page_new(html: str) -> list[dict]:
 # Old format (1994–2012, /archive/YYYY/MM/, KOI8-R)
 # ---------------------------------------------------------------------------
 
-def _extract_article_archive_line(line_td: Tag) -> dict:
+def _extract_article_archive_line(line_td: Tag, year: int = 0, month: int = 0) -> dict:
     b = line_td.find("b")
     author = b.get_text(strip=True).rstrip(".") if b else ""
 
@@ -221,7 +221,10 @@ def _extract_article_archive_line(line_td: Tag) -> dict:
             m = re.search(r'opendescription\s*\(\s*(\d+)\s*\)', href)
             if m:
                 article_id = int(m.group(1))
-        detail_url = _abs_url(href)
+            if year > 0 and month > 0 and article_id > 0:
+                detail_url = make_excerpt_url(year, month, article_id)
+        else:
+            detail_url = _abs_url(href)
         img = a_tag.find("img")
         if img:
             src = img.get("src", "")
@@ -258,31 +261,85 @@ def _extract_article_archive_line(line_td: Tag) -> dict:
     }
 
 
-def parse_content_page_archive(html: str, year: int) -> list[dict]:
+def _parse_archive_flat_text(content_table, fmt: str, year: int, month: int) -> list[dict]:
+    target_td = content_table.find(
+        lambda td: td.name == "td" and "Содержание номера" in ' '.join(td.get_text().split())
+    )
+    if not target_td:
+        return []
+
+    _AUTHOR_RE = re.compile(r"^[А-ЯA-Z]\.[А-ЯA-Za-zА-Яа-я\s]+\.")
+    current_section = ""
+    results = []
+
+    for raw_line in target_td.get_text().split("\n"):
+        line = raw_line.strip()
+        if not line or "Содержание номера" in line:
+            continue
+
+        if line.isdigit():
+            if results:
+                results[-1]["page"] = line
+            continue
+
+        if _AUTHOR_RE.match(line):
+            dot_pos = line.index(".", line.index(".") + 1) if line.count(".") > 1 else -1
+            if dot_pos > 0:
+                author = line[:dot_pos + 1].strip().rstrip(".")
+                topic = line[dot_pos + 1:].strip()
+            else:
+                author = ""
+                topic = line
+            results.append({
+                "section": current_section,
+                "author": author,
+                "topic": topic,
+                "page": "",
+                "detail_url": "",
+                "has_d1": False,
+                "has_d": False,
+                "format_type": fmt,
+            })
+        else:
+            current_section = line
+
+    return results
+
+
+def parse_content_page_archive(html: str, year: int, month: int = 0) -> list[dict]:
     fmt = detect_format_type(year)
     soup = BeautifulSoup(html, "lxml")
 
     content_table = soup.find(
         lambda t: t.name == "table"
-        and t.find(lambda td: td.name == "td" and "Содержание номера" in td.get_text())
+        and t.find(lambda td: td.name == "td" and "Содержание номера" in ' '.join(td.get_text().split()))
     )
-    if content_table:
-        article_table = content_table.find("table")
-    else:
+    if not content_table:
         header = soup.find(
-            lambda t: t.name in ("h3", "h4") and "Содержание номера" in t.get_text()
+            lambda t: t.name in ("h3", "h4") and "Содержание номера" in ' '.join(t.get_text().split())
         )
         if header:
-            article_table = header.find_next("table")
-        else:
-            article_table = None
+            content_table = header.find_next("table")
+        if not content_table:
+            return []
 
+    nested_tables = content_table.find_all("table")
+    article_table = None
+    for t in nested_tables:
+        trs = t.find_all("tr", recursive=False)
+        if len(trs) < 5:
+            continue
+        rows_with_2td = sum(1 for tr in trs if len(tr.find_all("td", recursive=False)) >= 2)
+        if rows_with_2td >= 3:
+            article_table = t
+            break
     if not article_table:
-        return []
+        return _parse_archive_flat_text(content_table, fmt, year, month)
 
     current_section = ""
     results = []
     page_override = ""
+    _AUTHOR_RE = re.compile(r"^[А-ЯA-Z]\.")
 
     for tr in article_table.find_all("tr", recursive=False):
         tds = tr.find_all("td", recursive=False)
@@ -296,11 +353,13 @@ def parse_content_page_archive(html: str, year: int) -> list[dict]:
         if not text:
             continue
 
-        is_section = False
         b = first_td.find("b")
-        if b and len(tds) == 1:
+        a_tag = first_td.find("a", href=True)
+
+        is_section = False
+        if b and a_tag is None:
             name = b.get_text(strip=True)
-            if name and not name.endswith(".") and not re.match(r"^[А-Я]\.", name):
+            if name and not name.endswith(".") and not _AUTHOR_RE.match(name):
                 current_section = name
                 is_section = True
 
@@ -310,8 +369,11 @@ def parse_content_page_archive(html: str, year: int) -> list[dict]:
         has_d1 = _has_d1_icon(first_td)
         has_d = _has_d_icon(first_td)
 
-        if not has_d and not has_d1 and not b and len(tds) == 2:
-            page_override = second_td.get_text(strip=True) if second_td else ""
+        has_b_author = b is not None and _AUTHOR_RE.match(b.get_text(strip=True))
+        is_article = has_b_author or has_d or has_d1
+
+        if not is_article and second_td and len(tds) == 2:
+            page_override = second_td.get_text(strip=True)
             results.append({
                 "section": current_section,
                 "author": "",
@@ -324,17 +386,15 @@ def parse_content_page_archive(html: str, year: int) -> list[dict]:
             })
             continue
 
-        if not has_d and not has_d1 and not b:
+        if not is_article:
             continue
 
-        article = _extract_article_archive_line(first_td)
-        if not article["topic"] and not article["author"]:
-            article["topic"] = text
+        article = _extract_article_archive_line(first_td, year, month)
         page = second_td.get_text(strip=True) if second_td else page_override
         results.append({
             "section": current_section,
             "author": article["author"],
-            "topic": article["topic"],
+            "topic": article["topic"] or text,
             "page": page,
             "detail_url": article["detail_url"],
             "has_d1": article["has_d1"],
@@ -347,22 +407,25 @@ def parse_content_page_archive(html: str, year: int) -> list[dict]:
 
 
 def parse_content_page(html: str, url: str = "", year: int = 0) -> list[dict]:
+    _MONTH_RE = re.compile(r"/(?:archive/(\d{4})/(\d{2})/|arhiv/(\d{4})/(\d{1,2})\.shtml)")
+
+    if "archive/" in url:
+        y_m = _MONTH_RE.search(url)
+        if y_m:
+            return parse_content_page_archive(html, int(y_m.group(1)), int(y_m.group(2)))
+        if year > 0:
+            return parse_content_page_archive(html, year)
+        return []
     if url and "arhiv/" in url:
         return parse_content_page_new(html)
     if year >= FORMAT_THRESHOLD:
         return parse_content_page_new(html)
     if year > 0:
-        return parse_content_page_archive(html, year)
-    if "archive/" in url:
-        y_m = re.search(r"/archive/(\d{4})/\d{2}/", url)
-        if y_m:
-            return parse_content_page_archive(html, int(y_m.group(1)))
-    if "arhiv/" in url:
-        return parse_content_page_new(html)
+        return parse_content_page_archive(html, year, 0)
     result = parse_content_page_new(html)
     if result:
         return result
-    return parse_content_page_archive(html, 2000)
+    return parse_content_page_archive(html, 2000, 0)
 
 
 # ---------------------------------------------------------------------------

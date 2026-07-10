@@ -1,38 +1,27 @@
 DEFAULT_ANALYZE_CONFIG: dict = {
-    "criteria": {
-        "topical_relevance": {"weight": 35, "desc": "Насколько статья соответствует теме запроса"},
-        "technical_depth": {"weight": 25, "desc": "Глубина: схемы, расчёты, компоненты, номиналы"},
-        "practical_applicability": {"weight": 20, "desc": "Возможность повторить/использовать в своих проектах"},
-        "novelty": {"weight": 10, "desc": "Оригинальность подхода"},
-        "historical_value": {"weight": 10, "desc": "Историческая или справочная ценность для радиолюбителя"},
-    },
-    "batch_size": 20,
+    "max_score": 100,
+    "batch_size": 50,
     "parallel_agents": 5,
-    "primary_filter": {
-        "enabled": True,
-        "batch_size": 100,
-    },
-    "prompt_filter": (
-        "You are a relevance triage assistant for a Russian radio amateur magazine archive.\n"
-        "Your job is to quickly decide whether each article is potentially relevant to the user's query, "
-        "based on title, author and section.\n\n"
+    "prompt_scorer": (
+        "You are an expert in electronics, radio engineering, and DIY.\n"
+        "Rate how relevant each article is to the user's query.\n\n"
         "User query:\n{user_query}\n\n"
+        "For each article you have: title, author, section, year, month, and a short excerpt.\n"
+        "Score relevance on a 0-100 scale using this rubric:\n\n"
+        "  Score  | Meaning\n"
+        "  -------|--------\n"
+        "  81-100 | Core topic match. Article is directly about the query subject.\n"
+        "  61-80  | Clearly relevant. Shares the same domain/technology as the query.\n"
+        "  41-60  | Somewhat relevant. Mentions related concepts but isn't focused on the query.\n"
+        "  21-40  | Tangential. The topic touches the query only peripherally.\n"
+        "   0-20  | Unrelated or off-topic.\n\n"
         "Rules:\n"
-        "- When in doubt, KEEP the article (recall-biased).\n"
-        "- Drop only articles that are clearly unrelated to the query.\n"
-        "- Do not score — just decide keep or drop.\n\n"
+        "- Base your score primarily on the excerpt and title. If the excerpt is empty, use the title and section only.\n"
+        "- Score strictly — use the whole 0-100 range.\n"
+        "- When in doubt, prefer the lower end of the range.\n"
+        "- Write the reason in the same language as the user query.\n\n"
         "Return a strict JSON array, no markdown, no explanation:\n"
-        '[{"id": N, "keep": true, "reason": "brief reason"}, ...]\n\n'
-        "Articles:\n{articles}"
-    ),
-    "prompt_subagent": (
-        "You are an expert in electronics, radio engineering, and DIY.\n\n"
-        "User's relevance query:\n{user_query}\n\n"
-        "Score each article on 5 criteria. Weights indicate the maximum score per criterion:\n\n"
-        "{criteria_block}\n\n"
-        "total = sum of all criterion scores.\n\n"
-        "Return a strict JSON array, no markdown, no explanation:\n"
-        '[{"id": N, "scores": {"topical_relevance": 0, ...}, "total": 0, "comment": "..."}, ...]\n\n'
+        '[{"id": N, "relevance": 0, "reason": "..."}, ...]\n\n'
         "Articles:\n{articles}"
     ),
     "prompt_interesting_to_query": (

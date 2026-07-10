@@ -11,8 +11,8 @@ import requests
 @dataclass
 class RequestConfig:
     timeout: int = 3600
-    delay_min: float = 0.5
-    delay_max: float = 1.0
+    delay_min: float = 0.1
+    delay_max: float = 0.2
     backoff_factor: float = 2.0
     max_retries: int = 3
     parallel_workers: int = 15

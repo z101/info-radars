@@ -23,22 +23,15 @@ BASE_HEADER_NAMES = {
 BASE_EDITABLE = {"is_interesting", "is_read"}
 
 SEARCH_COLUMNS = [
-    "id", "is_interesting", "is_read", "score", "date", "url",
+    "id", "is_interesting", "is_read", "score", "normalized", "date", "url",
     "pdf_url", "page", "section", "author", "excerpt", "topic",
-    "topical_relevance", "technical_depth",
-    "practical_applicability", "novelty", "historical_value",
 ]
 
 SEARCH_HEADER_NAMES = {
     "id": "id", "is_interesting": "I", "is_read": "R",
-    "score": "Score", "date": "Date", "url": "URL",
+    "score": "Score", "normalized": "Norm.", "date": "Date", "url": "URL",
     "pdf_url": "PDF", "page": "Page", "section": "Section",
     "author": "Author", "excerpt": "Excerpt", "topic": "Topic",
-    "topical_relevance": "Topical Relevance",
-    "technical_depth": "Technical Depth",
-    "practical_applicability": "Practical Applicability",
-    "novelty": "Novelty",
-    "historical_value": "Historical Value",
 }
 
 SEARCH_EDITABLE = {"is_interesting", "is_read"}
@@ -115,9 +108,7 @@ def export_to_xlsx(articles: list[dict], output_path: str, columns=None, header_
         "date": 8, "url": 5, "pdf_url": 5, "page": 5,
         "section": 15, "author": 15,
         "excerpt": 50, "topic": 50,
-        "score": 6,
-        "topical_relevance": 12, "technical_depth": 12,
-        "practical_applicability": 14, "novelty": 8, "historical_value": 10,
+        "score": 6, "normalized": 6,
     }
     for col_idx, col_name in enumerate(columns, 1):
         w = col_widths.get(col_name, 10)

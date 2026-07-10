@@ -65,19 +65,36 @@ def scrape_month(
     try:
         html = fetch_html(url, request_cfg, rate_limiter)
     except Exception as e:
-        logger.warning("Failed to fetch %s: %s", url, e)
+        logger.debug("Failed to fetch %s: %s", url, e)
         if not dry_run:
             db.mark_month_error(year, month, session_id, str(e))
         return -1
 
     articles = parse_content_page(html, url=url, year=year)
+    if not articles and not force_format:
+        alt_url = None
+        if "/arhiv/" in url:
+            alt_url = f"http://www.radio.ru/archive/{year}/{month:02d}/"
+        elif "/archive/" in url:
+            alt_url = f"http://www.radio.ru/arhiv/{year}/{month}.shtml"
+        if alt_url:
+            try:
+                alt_html = fetch_html(alt_url, request_cfg, rate_limiter)
+                alt_articles = parse_content_page(alt_html, url=alt_url, year=year)
+                if alt_articles:
+                    articles = alt_articles
+                    url = alt_url
+                    logger.debug("Fallback to %s — %d articles", url, len(articles))
+            except Exception:
+                pass
+
     if not articles:
-        logger.info("No articles found on %s", url)
+        logger.debug("No articles found on %s", url)
         if not dry_run:
             db.mark_month_done(year, month, session_id, 0)
         return 0
 
-    logger.info("Found %d articles in %s", len(articles), url)
+    logger.debug("Found %d articles in %s", len(articles), url)
 
     if dry_run:
         return len(articles)
@@ -197,14 +214,13 @@ def auto_scan_parallel(
 
         batch_results.sort(key=lambda x: (-x[0], -x[1]))
         for by, bm, result in batch_results:
-            ts = datetime.now().strftime("%H:%M:%S")
+            url = make_month_url(by, bm)
             if result == -1:
                 consecutive_404 += 1
                 consecutive_empty = 0
                 if not dry_run:
                     db.mark_month_404(by, bm, session_id, consecutive_404)
-                logger.info("Month %04d-%02d: 404 (%d consecutive)", by, bm, consecutive_404)
-                print(f"[{ts}] \u2717 {by:04d}-{bm:02d} \u2014 404 ({consecutive_404}/{max_404})")
+                logger.info("ERR %04d-%02d - 404 (%d/%d) | %s", by, bm, consecutive_404, max_404, url)
                 if consecutive_404 >= max_404:
                     break
             elif result == 0:
@@ -215,14 +231,13 @@ def auto_scan_parallel(
                 if not dry_run:
                     db.mark_month_done(by, bm, session_id, 0)
                 consecutive_404 = 0
-                logger.info("Month %04d-%02d: empty", by, bm)
+                logger.info("-- %04d-%02d - пусто | %s", by, bm, url)
             else:
                 total_found += result
                 total_months += 1
                 consecutive_404 = 0
                 consecutive_empty = 0
-                logger.info("Month %04d-%02d: %d articles", by, bm, result)
-                print(f"[{ts}] \u2713 {by:04d}-{bm:02d} \u2014 {result} articles")
+                logger.info("OK %04d-%02d - %d статей | %s", by, bm, result, url)
 
         if consecutive_404 >= max_404 or consecutive_empty >= max_empty:
             break
@@ -271,66 +286,51 @@ def fetch_missing_excerpts(
 ) -> int:
     rows = db.get_months_without_excerpts()
     if not rows:
-        print("  All excerpts already fetched.")
+        logger.info("All excerpts already fetched.")
         return 0
 
-    total_articles = sum(
-        len(db.get_articles_without_excerpt(r["year"], r["month"])) for r in rows
-    )
-    if total_articles == 0:
-        print("  All excerpts already fetched.")
+    all_articles = []
+    for row in rows:
+        articles = db.get_articles_without_excerpt(row["year"], row["month"])
+        for a in articles:
+            a["_year"] = row["year"]
+            a["_month"] = row["month"]
+        all_articles.extend(articles)
+
+    total = len(all_articles)
+    if total == 0:
+        logger.info("All excerpts already fetched.")
         return 0
 
-    total_months = len(rows)
-    fetched = 0
+    def _global_worker(article_row, cfg, rl):
+        y = article_row["_year"]
+        m = article_row["_month"]
+        return _make_excerpt_worker(y, m)(article_row, cfg, rl)
+
+    logger.info("Fetching %d excerpts from %d months ...", total, len(rows))
+    start = time.time()
+
+    results = fetch_all_parallel(all_articles, _global_worker, request_cfg)
+
+    batch_items = []
     errors = 0
-    start_time = time.time()
-
-    for idx, row in enumerate(rows, 1):
-        y, m = row["year"], row["month"]
-        articles_to_fetch = db.get_articles_without_excerpt(y, m)
-        if not articles_to_fetch:
+    for item, result, error in results:
+        if error:
+            logger.warning("Failed excerpt for %s: %s", item["topic"], error)
+            errors += 1
             continue
+        if result.get("excerpt"):
+            batch_items.append((result["excerpt"], result["topic"],
+                               item["_year"], item["_month"]))
+        if result.get("pdf_url"):
+            db.update_pdf_url(result["topic"], item["_year"], item["_month"],
+                              result["pdf_url"])
 
-        worker = _make_excerpt_worker(y, m)
-        results = fetch_all_parallel(articles_to_fetch, worker, request_cfg)
-
-        month_ok = 0
-        month_err = 0
-        batch_items = []
-        for item, result, error in results:
-            if error:
-                logger.warning("Failed excerpt for %s: %s", item["topic"], error)
-                month_err += 1
-                continue
-            if result.get("excerpt"):
-                batch_items.append((result["excerpt"], result["topic"], y, m))
-                month_ok += 1
-            if result.get("pdf_url"):
-                db.update_pdf_url(result["topic"], y, m, result["pdf_url"])
-
-        if batch_items:
-            updated = db.update_excerpts_batch(batch_items)
-            fetched += updated
-
-        errors += month_err
-
-        elapsed = time.time() - start_time
-        pct = idx / total_months * 100
-        rate = fetched / elapsed if elapsed > 0 else 0
-        eta = (total_articles - fetched) / rate if rate > 0 else 0
-        bar_len = 20
-        filled = int(bar_len * idx / total_months)
-        bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
-        print(
-            f"\r  {bar}  {pct:3.0f}%  |  Month {idx}/{total_months} ({y:04d}-{m:02d})  "
-            f"|  {fetched}/{total_articles} excerpts  |  eta {eta:.0f}s  ",
-            end="", flush=True,
-        )
-
-    print()
-    if errors:
-        logger.info("Excerpt pass complete: %d fetched, %d errors across %d months", fetched, errors, total_months)
+    fetched = db.update_excerpts_batch(batch_items) if batch_items else 0
+    elapsed = time.time() - start
+    logger.info("Excerpts: %d/%d за %.1fс (%.1f статей/с)%s",
+                fetched, total, elapsed, fetched / elapsed if elapsed > 0 else 0,
+                f", {errors} ошибок" if errors else "")
     return fetched
 
 
@@ -374,9 +374,9 @@ def show_summary(db: Database, json_output: bool = False):
     print(f"  Articles: {summary['total_articles']}")
     print(f"  Months:   {summary['total_months']}")
     if summary.get("year_range"):
-        print(f"  Years:    {summary['year_range'][0]} \u2014 {summary['year_range'][1]}")
+        print(f"  Years:    {summary['year_range'][0]} - {summary['year_range'][1]}")
     if summary.get("earliest"):
-        print(f"  Range:    {summary['earliest']} \u2014 {summary['latest']}")
+        print(f"  Range:    {summary['earliest']} - {summary['latest']}")
     print(f"  With excerpt: {summary['with_excerpt']}")
     print(f"  With PDF/DjVu: {summary['with_pdf']}")
     if summary.get("format_breakdown"):
@@ -434,18 +434,15 @@ def _resolve_hashes(args) -> tuple[str, str, str, str, dict]:
     query_name, query_text = _load_query_file(args.query_file)
     query_hash = compute_query_hash(query_text)
     cfg = DEFAULT_ANALYZE_CONFIG
-    rubric_hash = compute_rubric_hash(cfg["criteria"])
+    rubric_hash = compute_rubric_hash({})
     return query_name, query_text, query_hash, rubric_hash, cfg
 
 
 def _save_search_results(
     db: Database,
     results: list,
-    args,
     query_hash: str,
     rubric_hash: str,
-    query_name: str,
-    query_text: str,
 ) -> int:
     saved = 0
     errors = 0
@@ -467,36 +464,22 @@ def _save_search_results(
         if "error" in item:
             db.mark_search_error(
                 article_id, query_hash, rubric_hash, content_hash,
-                args.stage, str(item["error"]), query_name, query_text,
+                str(item["error"]),
             )
             errors += 1
             continue
 
-        if args.stage == "filter":
-            keep = bool(item.get("keep", True))
-            reason = item.get("reason", "")
-            db.save_search_filter(
-                article_id, query_hash, query_name, query_text,
-                rubric_hash, content_hash, keep, reason,
-            )
-            saved += 1
-        elif args.stage == "rerank":
-            scores = item.get("scores", {})
-            total = item.get("total", sum(scores.values()) if scores else 0)
-            comment = item.get("comment", "")
-            ok = db.save_search_score(
-                article_id, query_hash, rubric_hash,
-                scores, total, comment,
-            )
-            if ok:
-                saved += 1
-            else:
-                logger.warning("No active filter row for article id=%s; score skipped", article_id)
-                errors += 1
+        relevance = item.get("relevance", 0)
+        reason = item.get("reason", "")
+        db.save_search_result(
+            article_id, query_hash, rubric_hash, content_hash,
+            relevance, reason,
+        )
+        saved += 1
 
-    logger.info("Saved %d result(s), %d error(s) for stage=%s", saved, errors, args.stage)
-    if not args.json:
-        print(f"Saved {saved} result(s), {errors} error(s) for stage={args.stage}")
+    logger.info("Saved %d result(s), %d error(s)", saved, errors)
+    if not saved and not errors:
+        logger.info("No results to save.")
     return 0
 
 
@@ -512,52 +495,19 @@ def _handle_search_pipeline(args, db: Database) -> int:
         return 1
 
     max_retries = 3
-
-    if args.search_skip_filter:
-        candidates = db.get_search_candidates(query_hash, rubric_hash, "filter", max_retries)
-        for c in candidates:
-            db.save_search_filter(
-                c["id"], query_hash, query_name, query_text,
-                rubric_hash, c["content_hash"], True, "auto-kept (filter disabled)",
-            )
-        msg = f"Marked {len(candidates)} article(s) as kept (filter disabled)."
-        logger.info(msg)
-        if not args.json:
-            print(msg)
-        return 0
-
-    if args.search_status:
-        status = db.get_search_status(query_hash, rubric_hash)
-        if args.json:
-            print(json.dumps(status, indent=2, ensure_ascii=False))
-        else:
-            total = status["total_articles"]
-            print(f"\nAnalysis status for query '{query_name}':")
-            print(f"  Total articles in DB: {total}")
-            for s, cnt in sorted(status["by_status"].items()):
-                print(f"  {s:12s}: {cnt}")
-        return 0
+    batch_size = cfg.get("batch_size", 50)
 
     if args.search_candidates:
-        if not args.stage:
-            logger.error("--stage is required for --search-candidates")
-            return 1
-        batch_size = cfg.get("primary_filter", {}).get("batch_size", 100)
-        if args.stage == "rerank":
-            batch_size = cfg.get("batch_size", 20)
         if args.batch is not None:
             candidates = db.get_search_candidates_batch(
-                query_hash, rubric_hash, args.stage, args.batch, batch_size, max_retries,
+                query_hash, rubric_hash, args.batch, batch_size, max_retries,
             )
         else:
-            candidates = db.get_search_candidates(query_hash, rubric_hash, args.stage, max_retries)
+            candidates = db.get_search_candidates(query_hash, rubric_hash, max_retries)
         print(json.dumps(candidates, indent=2, ensure_ascii=False, default=str))
         return 0
 
     if args.search_save_stdin:
-        if not args.stage:
-            logger.error("--stage is required for --search-save-stdin")
-            return 1
         try:
             results = json.loads(sys.stdin.read())
         except json.JSONDecodeError as e:
@@ -566,12 +516,9 @@ def _handle_search_pipeline(args, db: Database) -> int:
         if not isinstance(results, list):
             logger.error("Expected a JSON array from stdin")
             return 1
-        return _save_search_results(db, results, args, query_hash, rubric_hash, query_name, query_text)
+        return _save_search_results(db, results, query_hash, rubric_hash)
 
     if args.search_save:
-        if not args.stage:
-            logger.error("--stage is required for --search-save")
-            return 1
         save_path = Path(args.search_save)
         if not save_path.exists():
             logger.error("File not found: %s", args.search_save)
@@ -584,7 +531,7 @@ def _handle_search_pipeline(args, db: Database) -> int:
         if not isinstance(results, list):
             logger.error("Expected a JSON array in %s", args.search_save)
             return 1
-        return _save_search_results(db, results, args, query_hash, rubric_hash, query_name, query_text)
+        return _save_search_results(db, results, query_hash, rubric_hash)
 
     if args.search_report:
         csv_path = generate_report(
@@ -593,7 +540,19 @@ def _handle_search_pipeline(args, db: Database) -> int:
         )
         if csv_path is None:
             print(f"No scored results yet for query '{query_name}'.")
-            print("Run the search pipeline first (filter + rerank stages).")
+            print("Run the search pipeline first.")
+        return 0
+
+    if args.search_status:
+        status = db.get_search_status(query_hash, rubric_hash)
+        if args.json:
+            print(json.dumps(status, indent=2, ensure_ascii=False))
+        else:
+            total = status["total_articles"]
+            print(f"\nScoring status for query '{query_name}':")
+            print(f"  Total articles in DB: {total}")
+            for s, cnt in sorted(status["by_status"].items()):
+                print(f"  {s:12s}: {cnt}")
         return 0
 
     return 0
@@ -607,7 +566,7 @@ def _handle_search(args, db: Database) -> int:
 
     query_hash = compute_query_hash(query_text)
     query_name = f"search_{query_hash[:12]}"
-    rubric_hash = compute_rubric_hash(DEFAULT_ANALYZE_CONFIG["criteria"])
+    rubric_hash = compute_rubric_hash({})
 
     if args.query_file:
         query_name, query_text = _load_query_file(args.query_file)
@@ -634,32 +593,27 @@ def _handle_search(args, db: Database) -> int:
         return 0
 
     cfg = DEFAULT_ANALYZE_CONFIG
-    batch_size = cfg["primary_filter"]["batch_size"]
+    batch_size = cfg["batch_size"]
     parallel = cfg["parallel_agents"]
 
     print(f"\n=== SEARCH REQUIRED: '{query_name}' ===")
-    print(f"Uncached articles: {total - scored} (total: {total}, scored: {scored})")
+    print(f"Unscored articles: {pending} (total: {total}, already scored: {scored})")
     print()
-    print(f"Stage 1 \u2014 filter (triage):")
-    filter_batches = (pending + batch_size - 1) // batch_size
-    print(f"  Batch size: {batch_size}")
-    print(f"  Batches: {filter_batches}")
-    print(f"  Parallel agents: {parallel}")
+    batches = (pending + batch_size - 1) // batch_size
+    print(f"Batch size: {batch_size}")
+    print(f"Batches: {batches}")
+    print(f"Parallel agents: {parallel}")
     print()
-    print(f"  Commands for batch 0:")
-    print(f"    --search-candidates --stage filter --batch 0 --json")
+    print(f"  Command for batch 0:")
+    print(f"    --search-candidates --batch 0 --json")
     print()
     print(f"  After subagent evaluation:")
-    print(f"    --search-save <result_file> --stage filter")
+    print(f"    --search-save <result_file>")
     print()
-    print(f"  Repeat for batches 1..{filter_batches - 1}.")
+    print(f"  Repeat for batches 1..{batches - 1}.")
     print()
-    if scored > 0:
-        print(f"  Note: {scored} already scored articles will be in the report.")
+    print(f"  After all batches, re-run: --search \"{query_text[:50]}...\" to get the report.")
     print()
-    print(f"After all filter batches, re-run the same command for rerank stage.")
-    print()
-    print(f"Re-run this command after all stages complete to get the report.")
     return 0
 
 
@@ -759,7 +713,7 @@ def create_parser() -> argparse.ArgumentParser:
             "  %(prog)s --dry-run --year 2026 --month 4       # Validate without saving\n"
             "  %(prog)s --no-excerpt                          # Skip annotations\n"
             "  %(prog)s --year 2026 --month 4 --force         # Re-scrape month\n"
-            "  %(prog)s --search \"ESP32\" --top 10             # Semantic search\n"
+            "  %(prog)s --search \"ESP32\" --top 10             # Search articles\n"
             "  %(prog)s --export-xlsx                         # Export to Excel\n"
             "  %(prog)s --mark-interesting 5 12               # Mark articles as interesting\n"
         ),
@@ -791,14 +745,12 @@ def create_parser() -> argparse.ArgumentParser:
 
     analysis = parser.add_argument_group("Search pipeline")
     analysis.add_argument("--query-file", type=str, metavar="PATH", help="Path to a query file")
-    analysis.add_argument("--stage", type=str, choices=["filter", "rerank"], help="Pipeline stage")
     analysis.add_argument("--search-candidates", action="store_true", help="List search candidates")
     analysis.add_argument("--batch", type=int, default=None, metavar="N", help="Batch number for candidates")
     analysis.add_argument("--search-save", type=str, metavar="PATH", help="Save search results from JSON file")
     analysis.add_argument("--search-save-stdin", action="store_true", help="Save search results from stdin")
     analysis.add_argument("--search-report", action="store_true", help="Print ranked search report")
-    analysis.add_argument("--search-status", action="store_true", help="Show search progress")
-    analysis.add_argument("--search-skip-filter", action="store_true", help="Skip filter stage, mark all as kept")
+    analysis.add_argument("--search-status", action="store_true", help="Show scoring progress")
     analysis.add_argument("--search", type=str, metavar="TEXT", help="Ad-hoc search query")
     analysis.add_argument("--top", type=int, metavar="N", help="Limit report to top N")
     analysis.add_argument("--min-total", type=int, default=0, metavar="N", help="Minimum total score")
@@ -843,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
 
     log_level = "DEBUG" if args.verbose else "INFO"
     setup_logging(log_level)
@@ -913,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_search(args, db)
 
     if (args.search_candidates or args.search_save or args.search_save_stdin
-            or args.search_report or args.search_status or args.search_skip_filter):
+            or args.search_report or args.search_status):
         return _handle_search_pipeline(args, db)
 
     # --- Interesting / Read / XLSX ---
@@ -1012,7 +966,7 @@ def main(argv: list[str] | None = None) -> int:
                     m = 12
 
             if args.dry_run:
-                print(f"\nDry run: {total_found} articles in range {args.since} \u2014 {args.until}")
+                print(f"\nDry run: {total_found} articles in range {args.since} - {args.until}")
             else:
                 db.finish_session(session_id, "completed",
                                   total_months=months_done, total_found=total_found)

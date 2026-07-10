@@ -146,10 +146,8 @@ When `--search` reports unscored articles:
 
 ```
 Python prints:
-  Stage: filter
-  Uncached: 350 articles
+  Batch size: 50
   Batches: 4 (batch 0 .. 3)
-  Batch size: 100
   Parallel agents: 5
 ```
 
@@ -157,52 +155,49 @@ Your task — run the loop:
 
 1. **Read a batch:**
    ```powershell
-   ..\..\..\.venv\Scripts\python src\main.py --search-candidates --stage filter --batch 0 --json --query-file <path>
+   ..\..\..\.venv\Scripts\python src\main.py --search-candidates --batch 0 --json --query-file <path>
    ```
 
 2. **Create a subagent** via the `task` tool (type `generalPurpose`):
    - Pass articles **inline** in the prompt
-   - Subagent returns: `[{"id": N, "keep": true/false, "reason": "..."}, ...]`
-   - **Recall bias:** when in doubt, `keep: true`
+   - Subagent returns: `[{"id": N, "relevance": 0-100, "reason": "..."}, ...]`
+   - Score using the rubric below
    - **Retry:** invalid JSON → retry up to 2 times
 
 3. **Save the result:**
    ```powershell
-   $json | ..\..\..\.venv\Scripts\python src\main.py --search-save-stdin --stage filter --query-file <path>
+   $json | ..\..\..\.venv\Scripts\python src\main.py --search-save-stdin --query-file <path>
    ```
    Or from file:
    ```powershell
-   ..\..\..\.venv\Scripts\python src\main.py --search-save <tmpfile> --stage filter --query-file <path>
+   ..\..\..\.venv\Scripts\python src\main.py --search-save <tmpfile> --query-file <path>
    ```
 
 4. **Parallel spawn:** up to `parallel_agents` (usually 5) subagents at once.
 
 5. **Repeat** for N = 0..batch_count-1.
 
-6. **After filter → rerank:**
-   ```powershell
-   ..\..\..\.venv\Scripts\python src\main.py --search-candidates --stage rerank --batch 0 --json --query-file <path>
-   ```
-   Subagent returns: `[{"id": N, "scores": {...}, "total": N, "comment": "..."}, ...]`
-   Save with: `--search-save <file> --stage rerank`
+6. **Re-run** `--search` — everything is cached now → report.
 
-7. **Re-run** `--search` — everything is cached now → report.
+### Scoring rubric
 
-### Scoring criteria (radio.ru)
+Single holistic relevance score (0-100):
 
-| Criterion | Weight | Description |
-|-----------|--------|-------------|
-| topical_relevance | 35 | Насколько статья соответствует теме запроса |
-| technical_depth | 25 | Глубина: схемы, расчёты, компоненты, номиналы |
-| practical_applicability | 20 | Возможность повторить/использовать в своих проектах |
-| novelty | 10 | Оригинальность подхода |
-| historical_value | 10 | Историческая или справочная ценность для радиолюбителя |
+| Score  | Meaning |
+|--------|---------|
+| 81-100 | Core topic match. Article is directly about the query subject. |
+| 61-80  | Clearly relevant. Shares the same domain/technology as the query. |
+| 41-60  | Somewhat relevant. Mentions related concepts but isn't focused on the query. |
+| 21-40  | Tangential. The topic touches the query only peripherally. |
+|  0-20  | Unrelated or off-topic. |
+
+After scoring all batches, scores are **MinMax-normalized** to 0-100 to compensate for drift between parallel agents.
 
 ### Cache
 
 - Key: `(article_id, query_hash, rubric_hash, content_hash)`
 - Content hash is computed from `(excerpt, topic, author)`
-- Changing query file or criteria → cache miss
+- Changing query file → cache miss
 
 ### Advanced pipeline commands
 
@@ -212,9 +207,6 @@ Your task — run the loop:
 
 # Report from cache (XLSX + text)
 ..\..\..\.venv\Scripts\python src\main.py --search-report --query-file <path> --top 20
-
-# Skip triage
-..\..\..\.venv\Scripts\python src\main.py --search-skip-filter --query-file <path>
 ```
 
 ---
@@ -263,7 +255,7 @@ Columns **I** and **R** are editable (yellow background) — mark them Y to set 
 ### Database: `data/radio.db`
 
 - **`articles`**: year, month, section, topic, author, page, excerpt, detail_url, pdf_url, is_interesting, is_read, content_hash, format_type, has_d1
-- **`search_scores`**: article_id, query_hash, rubric_hash, content_hash, status, passed_filter, scores_json, total, comment
+- **`search_scores`**: article_id, query_hash, rubric_hash, content_hash, status, scores_json, total, comment
 - **`scraped_months`**: tracks which (year, month) pairs are scraped, with consecutive_404 counter
 - **`scrape_sessions`**: logging of each scrape run
 
@@ -309,9 +301,9 @@ The `--archive` flag forces old format URL construction; `--arhiv` forces new fo
 
 ### Search pipeline
 
-Two-stage scoring cached in `search_scores`:
-1. **Filter (triage)**: quick yes/no relevance check by subagent
-2. **Rerank**: detailed 5-criteria scoring by subagent
+Single-stage scoring cached in `search_scores`:
+1. **Score**: each article scored 0-100 by a LLM subagent using a rubric
+2. **Normalize**: MinMax normalization across all scored articles to compensate for agent drift
 
 ---
 
