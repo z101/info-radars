@@ -1,0 +1,562 @@
+import re
+from typing import Optional
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup, Tag
+
+BASE_URL = "http://www.radio.ru"
+
+FORMAT_THRESHOLD = 2010
+
+
+def make_month_url(year: int, month: int) -> str:
+    if year >= FORMAT_THRESHOLD:
+        return f"{BASE_URL}/arhiv/{year}/{month}.shtml"
+    return f"{BASE_URL}/archive/{year}/{month:02d}/"
+
+
+def make_excerpt_url(year: int, month: int, article_id: int) -> str:
+    return f"{BASE_URL}/archive/{year}/{month:02d}/a{article_id}.shtml"
+
+
+def decrement_month(year: int, month: int) -> tuple[int, int]:
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def validate_year_month(year: int, month: int) -> bool:
+    return 1924 <= year <= 2100 and 1 <= month <= 12
+
+
+def detect_format_type(year: int) -> str:
+    if year >= FORMAT_THRESHOLD:
+        return "new"
+    if year >= 2009:
+        return "old_pdf"
+    if year >= 2005:
+        return "old_djvu"
+    if year >= 2002:
+        return "old_annotation"
+    return "old_toc"
+
+
+def _abs_url(href: str) -> str:
+    if not href:
+        return ""
+    if href.startswith("http"):
+        return href
+    return urljoin(BASE_URL, href)
+
+
+def _has_d1_icon(td: Tag) -> bool:
+    imgs = td.find_all("img", src=re.compile(r"d1\.(gif|png)$", re.I))
+    return len(imgs) > 0
+
+
+def _has_d_icon(td: Tag) -> bool:
+    imgs = td.find_all("img", src=re.compile(r"d\.(gif|png)$", re.I))
+    return len(imgs) > 0
+
+
+# ---------------------------------------------------------------------------
+# New format (2010+, /arhiv/YYYY/M.shtml, UTF-8, <table class="t_sod">)
+# ---------------------------------------------------------------------------
+
+def _tr_is_section(tr: Tag) -> bool:
+    tds = tr.find_all("td", recursive=False)
+    if not tds:
+        return False
+    style = tds[0].get("style", "")
+    if "column-span: 2" not in style and tds[0].get("colspan") != "2":
+        return False
+    b = tds[0].find("b")
+    return b is not None
+
+
+def _tr_is_article(tr: Tag) -> bool:
+    tds = tr.find_all("td", recursive=False)
+    if len(tds) < 2:
+        return False
+    b = tds[0].find("b")
+    if not b:
+        return False
+    bt = b.get_text(strip=True)
+    if not bt.endswith("."):
+        return False
+    if not re.match(r"^[A-ZА-ЯЁ]\.", bt):
+        return False
+    return True
+
+
+def _tr_is_info(tr: Tag) -> bool:
+    tds = tr.find_all("td", recursive=False)
+    if not tds:
+        return False
+    text = tds[0].get_text(strip=True)
+    return text.startswith("Информация")
+
+
+def _extract_section_name(tr: Tag) -> str:
+    tds = tr.find_all("td", recursive=False)
+    b = tds[0].find("b")
+    return b.get_text(strip=True) if b else ""
+
+
+def _extract_article(tr: Tag) -> dict:
+    tds = tr.find_all("td", recursive=False)
+    first_td = tds[0]
+    second_td = tds[1]
+
+    b = first_td.find("b")
+    author = b.get_text(strip=True).rstrip(".") if b else ""
+
+    a_tag = first_td.find("a", href=True)
+    detail_url = _abs_url(a_tag["href"]) if a_tag else ""
+
+    topic_html = str(first_td)
+    topic = ""
+    if b:
+        after_b = topic_html.split(str(b), 1)
+        if len(after_b) > 1:
+            after_b_str = after_b[1]
+            if a_tag:
+                a_str = str(a_tag)
+                aidx = after_b_str.find(a_str)
+                if aidx >= 0:
+                    topic = after_b_str[:aidx]
+                else:
+                    topic = after_b_str
+            else:
+                topic = after_b_str
+            topic = BeautifulSoup(topic, "lxml").get_text(strip=True)
+            topic = topic.lstrip(".,;: \t&nbsp;").rstrip(".,; \t&nbsp;")
+
+    page = second_td.get_text(strip=True)
+
+    has_d1 = _has_d1_icon(first_td)
+    has_d = _has_d_icon(first_td)
+
+    return {
+        "author": author,
+        "topic": topic,
+        "page": page,
+        "detail_url": detail_url,
+        "has_d1": has_d1,
+        "has_d": has_d,
+        "format_type": "new",
+    }
+
+
+def parse_content_page_new(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+
+    header = soup.find(
+        lambda t: t.name in ("h3", "h4") and "Содержание номера" in t.get_text()
+    )
+    if not header:
+        return []
+
+    table = header.find_next("table", class_="t_sod")
+    if not table:
+        return []
+
+    current_section = ""
+    results = []
+
+    for tr in table.find_all("tr", recursive=False):
+        if _tr_is_section(tr):
+            name = _extract_section_name(tr)
+            if name and name not in ("—", "–", "-"):
+                current_section = name
+            continue
+
+        if _tr_is_info(tr):
+            tds = tr.find_all("td", recursive=False)
+            first_td = tds[0]
+            a_tag = first_td.find("a", href=True)
+            detail_url = _abs_url(a_tag["href"]) if a_tag else ""
+            page = tds[1].get_text(strip=True) if len(tds) > 1 else ""
+            text = first_td.get_text(strip=True)
+            has_d1 = _has_d1_icon(first_td)
+            has_d = _has_d_icon(first_td)
+            results.append({
+                "section": "",
+                "author": "",
+                "topic": text,
+                "page": page,
+                "detail_url": detail_url,
+                "has_d1": has_d1,
+                "has_d": has_d,
+                "format_type": "new",
+            })
+            continue
+
+        if _tr_is_article(tr):
+            article = _extract_article(tr)
+            article["section"] = current_section
+            results.append(article)
+            continue
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Old format (1994–2012, /archive/YYYY/MM/, KOI8-R)
+# ---------------------------------------------------------------------------
+
+def _extract_article_archive_line(line_td: Tag, year: int = 0, month: int = 0) -> dict:
+    b = line_td.find("b")
+    author = b.get_text(strip=True).rstrip(".") if b else ""
+
+    a_tag = line_td.find("a", href=True)
+    detail_url = ""
+    article_id = 0
+    has_d1 = False
+    has_d = False
+
+    if a_tag:
+        href = a_tag.get("href", "")
+        if "javascript:opendescription" in href:
+            m = re.search(r'opendescription\s*\(\s*(\d+)\s*\)', href)
+            if m:
+                article_id = int(m.group(1))
+            if year > 0 and month > 0 and article_id > 0:
+                detail_url = make_excerpt_url(year, month, article_id)
+        else:
+            detail_url = _abs_url(href)
+        img = a_tag.find("img")
+        if img:
+            src = img.get("src", "")
+            has_d1 = bool(re.search(r"d1\.(gif|png)$", src, re.I))
+            has_d = bool(re.search(r"d\.(gif|png)$", src, re.I))
+
+    topic = ""
+    if b:
+        after_b = str(line_td).split(str(b), 1)
+        if len(after_b) > 1:
+            after_b_str = after_b[1]
+            if a_tag:
+                a_str = str(a_tag)
+                aidx = after_b_str.find(a_str)
+                if aidx >= 0:
+                    topic = after_b_str[:aidx]
+                else:
+                    topic = after_b_str
+            else:
+                topic = after_b_str
+            topic = BeautifulSoup(topic, "lxml").get_text(strip=True)
+            topic = topic.rstrip(".,; \t&nbsp;")
+    else:
+        text = line_td.get_text(strip=True)
+        topic = text
+
+    return {
+        "author": author,
+        "topic": topic,
+        "detail_url": detail_url,
+        "article_id": article_id,
+        "has_d1": has_d1,
+        "has_d": has_d,
+    }
+
+
+def _parse_archive_flat_text(content_table, fmt: str, year: int, month: int) -> list[dict]:
+    target_td = content_table.find(
+        lambda td: td.name == "td" and "Содержание номера" in ' '.join(td.get_text().split())
+    )
+    if not target_td:
+        return []
+
+    _AUTHOR_RE = re.compile(r"^[А-ЯA-Z]\.[А-ЯA-Za-zА-Яа-я\s]+\.")
+    current_section = ""
+    results = []
+
+    for raw_line in target_td.get_text().split("\n"):
+        line = raw_line.strip()
+        if not line or "Содержание номера" in line:
+            continue
+
+        if line.isdigit():
+            if results:
+                results[-1]["page"] = line
+            continue
+
+        if _AUTHOR_RE.match(line):
+            dot_pos = line.index(".", line.index(".") + 1) if line.count(".") > 1 else -1
+            if dot_pos > 0:
+                author = line[:dot_pos + 1].strip().rstrip(".")
+                topic = line[dot_pos + 1:].strip()
+            else:
+                author = ""
+                topic = line
+            results.append({
+                "section": current_section,
+                "author": author,
+                "topic": topic,
+                "page": "",
+                "detail_url": "",
+                "has_d1": False,
+                "has_d": False,
+                "format_type": fmt,
+            })
+        else:
+            current_section = line
+
+    return results
+
+
+def parse_content_page_archive(html: str, year: int, month: int = 0) -> list[dict]:
+    fmt = detect_format_type(year)
+    soup = BeautifulSoup(html, "lxml")
+
+    content_table = soup.find(
+        lambda t: t.name == "table"
+        and t.find(lambda td: td.name == "td" and "Содержание номера" in ' '.join(td.get_text().split()))
+    )
+    if not content_table:
+        header = soup.find(
+            lambda t: t.name in ("h3", "h4") and "Содержание номера" in ' '.join(t.get_text().split())
+        )
+        if header:
+            content_table = header.find_next("table")
+        if not content_table:
+            return []
+
+    nested_tables = content_table.find_all("table")
+    article_table = None
+    for t in nested_tables:
+        trs = t.find_all("tr", recursive=False)
+        if len(trs) < 5:
+            continue
+        rows_with_2td = sum(1 for tr in trs if len(tr.find_all("td", recursive=False)) >= 2)
+        if rows_with_2td >= 3:
+            article_table = t
+            break
+    if not article_table:
+        article_table = content_table
+
+    current_section = ""
+    results = []
+    page_override = ""
+    _AUTHOR_RE = re.compile(r"^[А-ЯA-Z]\.")
+
+    for tr in article_table.find_all("tr", recursive=False):
+        tds = tr.find_all("td", recursive=False)
+        if not tds:
+            continue
+
+        first_td = tds[0]
+        second_td = tds[-1] if len(tds) > 1 else None
+        text = first_td.get_text(strip=True)
+
+        if not text:
+            continue
+
+        b = first_td.find("b")
+        a_tag = first_td.find("a", href=True)
+
+        is_section = False
+        if b and a_tag is None:
+            name = b.get_text(strip=True)
+            if name and not name.endswith(".") and not _AUTHOR_RE.match(name):
+                current_section = name
+                is_section = True
+
+        if is_section:
+            continue
+
+        has_d1 = _has_d1_icon(first_td)
+        has_d = _has_d_icon(first_td)
+
+        has_b_author = b is not None and _AUTHOR_RE.match(b.get_text(strip=True))
+        is_article = has_b_author or has_d or has_d1
+
+        if not is_article and second_td and len(tds) == 2:
+            page_override = second_td.get_text(strip=True)
+            results.append({
+                "section": current_section,
+                "author": "",
+                "topic": text,
+                "page": page_override,
+                "detail_url": "",
+                "has_d1": False,
+                "has_d": False,
+                "format_type": fmt,
+            })
+            continue
+
+        if not is_article:
+            continue
+
+        article = _extract_article_archive_line(first_td, year, month)
+        page = second_td.get_text(strip=True) if second_td else page_override
+        results.append({
+            "section": current_section,
+            "author": article["author"],
+            "topic": article["topic"] or text,
+            "page": page,
+            "detail_url": article["detail_url"],
+            "has_d1": article["has_d1"],
+            "has_d": article["has_d"],
+            "article_id": article["article_id"],
+            "format_type": fmt,
+        })
+
+    return results
+
+
+def parse_content_page(html: str, url: str = "", year: int = 0) -> list[dict]:
+    _MONTH_RE = re.compile(r"/(?:archive/(\d{4})/(\d{2})/|arhiv/(\d{4})/(\d{1,2})\.shtml)")
+
+    if "archive/" in url:
+        y_m = _MONTH_RE.search(url)
+        if y_m:
+            return parse_content_page_archive(html, int(y_m.group(1)), int(y_m.group(2)))
+        if year > 0:
+            return parse_content_page_archive(html, year)
+        return []
+    if url and "arhiv/" in url:
+        return parse_content_page_new(html)
+    if year >= FORMAT_THRESHOLD:
+        return parse_content_page_new(html)
+    if year > 0:
+        return parse_content_page_archive(html, year, 0)
+    result = parse_content_page_new(html)
+    if result:
+        return result
+    return parse_content_page_archive(html, 2000, 0)
+
+
+# ---------------------------------------------------------------------------
+# Excerpt parsing
+# ---------------------------------------------------------------------------
+
+def parse_excerpt_page(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+
+    header = soup.find(
+        lambda t: t.name in ("h3", "h4") and "Аннотация статьи" in t.get_text()
+    )
+    if not header:
+        return ""
+
+    table = header.find_next("table", class_="t_sod")
+    if table:
+        skipped_title = False
+        for p in table.find_all("p"):
+            txt = p.get_text(strip=True)
+            if not txt:
+                continue
+            if "Прочитать" in txt or "Вернуться" in txt:
+                continue
+            b_tag = p.find("b")
+            if b_tag:
+                if not skipped_title:
+                    skipped_title = True
+                    continue
+                after_text = ""
+                for node in b_tag.next_siblings:
+                    if hasattr(node, 'get_text'):
+                        after_text += node.get_text(strip=True)
+                    else:
+                        after_text += str(node).strip()
+                if after_text.strip():
+                    return after_text.strip()
+                continue
+            if not skipped_title:
+                skipped_title = True
+                continue
+            return txt
+        return ""
+
+    paragraphs = []
+    found_first = False
+    for sibling in header.find_next_siblings():
+        txt = sibling.get_text(strip=True)
+        if not txt:
+            continue
+        if "Вернуться назад" in txt:
+            break
+        if "Прочитать" in txt:
+            break
+        if not found_first:
+            found_first = True
+            continue
+        paragraphs.append(txt)
+
+    return "\n\n".join(paragraphs).strip()
+
+
+def parse_excerpt_page_archive(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+
+    paragraphs = soup.find_all("p")
+    texts = []
+    for p in paragraphs:
+        txt = p.get_text(strip=True)
+        if not txt:
+            continue
+        if any(skip in txt for skip in ("Прочитать", "Вернуться назад", "Вернуться", "Описание")):
+            continue
+        b = p.find("b")
+        if b:
+            b_text = b.get_text(strip=True)
+            if b_text.endswith("."):
+                after_text = ""
+                for node in b.next_siblings:
+                    if hasattr(node, 'get_text'):
+                        after_text += node.get_text(strip=True)
+                    else:
+                        after_text += str(node).strip()
+                if after_text.strip():
+                    texts.append(after_text.strip())
+                    continue
+            # annotation might be before <b>, or inside <b> itself
+            # <p>ANNOTATION<b>.</b></p> — take text without <b>
+            p_clone = BeautifulSoup(str(p), 'lxml')
+            for b_tag in p_clone.find_all('b'):
+                b_tag.decompose()
+            no_b_text = p_clone.get_text(strip=True)
+            if no_b_text:
+                texts.append(no_b_text)
+            continue
+        if txt.strip():
+            texts.append(txt)
+    if texts:
+        return "\n\n".join(texts).strip()
+
+    # Fallback: no <p> tags — try <td><font> or body text
+    import re
+    _nav_re = re.compile(r'>>|\xabРАДИО\xbb|\xabРадио\xbb', re.I)
+    body = soup.find("body")
+    if body:
+        for td in body.find_all("td"):
+            font = td.find("font")
+            if font:
+                ftxt = font.get_text(strip=True)
+                if ftxt and len(ftxt) > 10 and not _nav_re.search(ftxt):
+                    texts.append(ftxt)
+    if texts:
+        return "\n\n".join(texts).strip()
+
+    return ""
+
+
+def extract_pdf_url(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    pdf_link = soup.find("a", href=re.compile(r"\.pdf$"))
+    if pdf_link:
+        href = pdf_link["href"]
+        if href.startswith("http"):
+            return href
+        return "http://ftp.radio.ru" + href if href.startswith("/") else href
+
+    djvu_link = soup.find("a", href=re.compile(r"\.djvu$", re.I))
+    if djvu_link:
+        href = djvu_link["href"]
+        if href.startswith("http"):
+            return href
+        return urljoin(BASE_URL, href)
+
+    return ""

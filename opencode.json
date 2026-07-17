@@ -2,11 +2,15 @@
   "$schema": "https://opencode.ai/config.json",
   "permission": {
     "bash": {
-      "python .agents/skills/sqlite-query/setup_venv.py": "allow",
-      "python .agents/skills/sqlite-query/setup_venv.py *": "allow",
-      "echo * | python .agents/skills/sqlite-query/executor.py *": "allow",
-      "Get-Content * | python .agents/skills/sqlite-query/executor.py *": "allow",
-      "python .agents/skills/sqlite-query/executor.py *": "allow"
+      "..\\..\\..\\.venv\\Scripts\\python src\\main.py *": "allow",
+      "python .opencode/skills/sqlite-query/setup_venv.py": "allow",
+      "python .opencode/skills/sqlite-query/setup_venv.py *": "allow",
+      "echo * | python .opencode/skills/sqlite-query/executor.py *": "allow",
+      "Get-Content * | python .opencode/skills/sqlite-query/executor.py *": "allow",
+      "python .opencode/skills/sqlite-query/executor.py *": "allow"
+    },
+    "task": {
+      "searcher": "allow"
     }
   }
 }

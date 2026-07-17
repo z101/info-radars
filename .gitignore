@@ -1,6 +1,6 @@
 # Root venv (single source of truth for all code)
 .venv/
-.agents/.venv/
+.opencode/.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -8,10 +8,10 @@ __pycache__/
 .vscode/settings.json
 
 # .agent dependencies
-.agents/node_modules/
+.opencode/node_modules/
 
 # Skill runtime data (each skill has its own .gitignore)
-!.agents/skills/*/data/.gitkeep
+!.opencode/skills/*/data/.gitkeep
 
 # Generated analysis reports
 reports/
